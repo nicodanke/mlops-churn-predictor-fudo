@@ -21,6 +21,7 @@ from rich.table import Table
 
 from churn import pipeline
 from churn.config import DEFAULT_PRICING_PATH, Config
+from churn.data.intercom import attribute_accounts, attribution_report, load_companies, load_tickets
 from churn.data.seasonality import (
     NOMBRE_MES,
     SeasonalityConfig,
@@ -335,6 +336,71 @@ def seasonality(
             f"no aporta (ver config/model.yaml). Estas {len(estacionales):,} cuentas "
             f"entran al entrenamiento igual, y sus meses de pausa ya los descarta la "
             f"ventana de confirmacion del etiquetado.[/dim]"
+        )
+
+
+@app.command(name="intercom-check")
+def intercom_check(
+    tickets: str = typer.Option("data/intercom/intercom_data.csv", help="Export de tickets."),
+    companies: str | None = typer.Option(
+        None, "--companies", help="Export de companies de Intercom, para resolver el id de Fudo."
+    ),
+    config: str | None = ConfigOpt,
+) -> None:
+    """Evalua si un export de Intercom alcanza para usarlo como fuente de features.
+
+    Reporta cuantos tickets se pueden atribuir a una cuenta, por que via, y cuantos caen
+    en periodos que tienen etiqueta de churn — que es lo que decide si sirve para entrenar.
+    """
+    cfg = Config.load(config)
+    tk = load_tickets(tickets)
+
+    panel = pd.read_parquet(cfg.path_of("data.interim_path"), columns=["id", "periodo", "churn"])
+    cuentas_validas = set(panel["id"].astype(int))
+
+    comp = None
+    if companies:
+        comp = load_companies(companies)
+        console.print(f"[green]Companies leidas:[/green] {len(comp):,} con id de Fudo")
+        cruzan = comp["account_id"].isin(cuentas_validas).sum()
+        console.print(
+            f"  de esas, {cruzan:,} ({cruzan / max(len(comp), 1):.0%}) existen en el snapshot"
+        )
+        if cruzan / max(len(comp), 1) < 0.5:
+            console.print(
+                "[yellow]  Menos de la mitad cruza con el snapshot: puede que la columna "
+                "detectada no sea el id de Fudo. Revisar el mapeo.[/yellow]"
+            )
+
+    tk = attribute_accounts(tk, comp, valid_account_ids=cuentas_validas)
+
+    console.print("\n[bold]De donde sale la cuenta de cada ticket[/bold]")
+    _print_df(attribution_report(tk))
+
+    etiquetables = panel.loc[panel["churn"].notna(), "periodo"]
+    lo, hi = int(etiquetables.min()), int(etiquetables.max())
+    utiles = tk[tk["account_id"].notna() & tk["periodo"].between(lo, hi)]
+
+    console.print(
+        f"\n[bold]Utilidad para entrenar[/bold]\n"
+        f"  periodos con etiqueta de churn: {lo} .. {hi}\n"
+        f"  periodos cubiertos por tickets: {tk['periodo'].min()} .. {tk['periodo'].max()}\n"
+        f"  tickets atribuidos que caen ahi dentro: [bold]{len(utiles):,}[/bold]"
+        f" sobre {len(tk):,}\n"
+        f"  cuentas alcanzadas: {utiles['account_id'].nunique():,}"
+    )
+
+    if len(utiles) < 5000:
+        console.print(
+            "\n[yellow]No alcanza para entrenar.[/yellow] Hacen falta tickets atribuidos "
+            "dentro de los periodos etiquetados, y en volumen: con unos pocos cientos no se "
+            "puede distinguir señal de ruido. Ver data/README.md para que pedir en el "
+            "re-export."
+        )
+    else:
+        console.print(
+            "\n[green]Alcanza para intentarlo.[/green] Siguiente paso: construir las "
+            "features de soporte con lag y medir si mejoran el PR-AUC."
         )
 
 

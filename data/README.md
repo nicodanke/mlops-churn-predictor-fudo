@@ -82,3 +82,28 @@ en [`notebooks/02_eda_intercom.ipynb`](../notebooks/02_eda_intercom.ipynb).
 Campos necesarios: `Ticket ID`, `Created At`, `Updated At`, `Company ID`, `Ticket Type`,
 `Ticket State`, `Category`, `Channel`, y de `Ticket Attributes`: `ID de dash`, `Tema`,
 `Motivo`, `Submotivo`, `Necesita derivación`.
+
+### La tabla de companies
+
+Intercom distingue dos identificadores de company, y la diferencia importa:
+
+| Campo | Qué es | Dónde aparece |
+|---|---|---|
+| `id` | ObjectId interno de Intercom, 24 caracteres hex | es el `Company ID` de los tickets |
+| `company_id` | el identificador **externo**, que define la empresa | acá debería estar el ID de Fudo |
+
+O sea que el `Company ID` que traen los tickets **no es** el ID de Fudo: hace falta la
+tabla de companies para traducirlo. En la API de Intercom sale de
+`GET /companies` o del scroll (`GET /companies/scroll`), y si el ID de Fudo no está en
+`company_id` hay que buscarlo entre los `custom_attributes`.
+
+### Verificar un export antes de invertir tiempo en él
+
+```bash
+churn intercom-check --companies data/intercom/companies.csv
+```
+
+Reporta cuántos tickets se pueden atribuir a una cuenta y por qué vía, y —lo que decide
+si sirve— cuántos caen dentro de períodos que tienen etiqueta de churn. La lógica de
+atribución está en [`src/churn/data/intercom.py`](../src/churn/data/intercom.py), con las
+cuatro vías ordenadas por confiabilidad.
