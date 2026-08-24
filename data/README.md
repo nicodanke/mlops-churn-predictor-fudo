@@ -63,15 +63,19 @@ en [`notebooks/02_eda_intercom.ipynb`](../notebooks/02_eda_intercom.ipynb).
 
 - Está **truncado en 20.000 registros** (límite de paginación de la API).
 - Los tickets de **soporte no registran el `ID de dash`** (0% en los de baja, contra 100%
-  en los de integraciones), así que no se pueden atribuir a una cuenta.
+  en los de integraciones). Se recupera parte cruzando por el `external_id` de los
+  contactos y por `Company ID` — la cobertura sube de 22% a 44% — pero los mapas se
+  derivan del propio archivo truncado y arrastran su límite.
 - La ventana temporal (2025-07 en adelante) casi no se superpone con los períodos que
   tienen etiqueta de churn: sólo **19 tickets** caen dentro.
 
 ### Qué pedir en el re-export
 
 1. Sin límite de registros, **desde 2024-01**.
-2. La **tabla de Companies de Intercom**, con el atributo que guarda el ID de Fudo: es lo
-   que permite atribuir los tickets de soporte vía `Company ID` (presente en el 63%).
+2. La **tabla de usuarios de Fudo** (`user_id` → `account_id`). El `external_id` de los
+   contactos es ese id de usuario y está en el **92%** de los tickets, contra el 22% del
+   atributo `ID de dash`: es la vía más directa para atribuir los tickets de soporte.
+   Como alternativa, la tabla de Companies de Intercom cubre el 63%.
 3. **Sin la columna `Ticket Parts`** — las conversaciones son el 99% del peso (1 GB para
    20.000 tickets) y el modelo no las necesita.
 
