@@ -603,9 +603,12 @@ negocio, scoring batch con explicabilidad, API, dashboard, Docker y despliegue a
 - Validar con CX el listado de cuentas de temporada: hoy se infiere del patrón de pausas,
   pero el dato duro (rubro, ubicación, estacionalidad declarada) está en el CRM.
 - Definir con negocio los cortes de riesgo alto/medio/bajo en revenue.
-- Incorporar las fuentes que el canvas menciona y todavía no están: tickets de Zendesk e
-  interacciones de HubSpot. La hipótesis es que aportan señal **temprana**, que es justo
-  donde el modelo actual es más débil.
+- Incorporar las fuentes que el canvas menciona y todavía no están: tickets de soporte e
+  interacciones comerciales. La hipótesis es que aportan señal **temprana**, que es justo
+  donde el modelo actual es más débil. El export de Intercom ya está evaluado
+  ([`notebooks/02_eda_intercom.ipynb`](notebooks/02_eda_intercom.ipynb)): la señal existe
+  pero el archivo está truncado y los tickets de soporte no registran el ID de cuenta;
+  ahí está la especificación de qué re-exportar.
 - Monitoreo en producción: comparar el grupo predicho como no-churn contra las cuentas
   efectivamente targeteadas, y medir el revenue perdido por abandono.
 - Reentrenamiento automático y detección de deriva.
@@ -616,6 +619,8 @@ negocio, scoring batch con explicabilidad, API, dashboard, Docker y despliegue a
 
 - [`notebooks/01_eda_churn.ipynb`](notebooks/01_eda_churn.ipynb) — el análisis exploratorio
   del que salieron las decisiones de etiquetado, split y features.
+- [`notebooks/02_eda_intercom.ipynb`](notebooks/02_eda_intercom.ipynb) — evaluación de los
+  tickets de soporte como fuente adicional.
 
 - [`docs/Fudata - Base de Funcionalidades.pdf`](docs/) — diccionario de datos del snapshot.
 - [`docs/Prediccion_Churn_ML_Canvas.pdf`](docs/) — el ML Canvas del proyecto.

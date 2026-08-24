@@ -50,3 +50,31 @@ El CSV incluye `nombre` (razón social del restaurante). El pipeline lo excluye
 explícitamente de las features del modelo (ver `DROP_FROM_FEATURES` en
 [`src/churn/data/schema.py`](../src/churn/data/schema.py)) y sólo lo usa para mostrarlo
 en el dashboard.
+
+---
+
+## Intercom (`data/intercom/`)
+
+Export de tickets de soporte, evaluado como fuente adicional de features. El análisis está
+en [`notebooks/02_eda_intercom.ipynb`](../notebooks/02_eda_intercom.ipynb).
+
+**Estado: no integrado todavía.** La señal existe y es buena — hay tickets con motivo
+`"Solicitar la baja de mi cuenta"` — pero el export disponible no alcanza:
+
+- Está **truncado en 20.000 registros** (límite de paginación de la API).
+- Los tickets de **soporte no registran el `ID de dash`** (0% en los de baja, contra 100%
+  en los de integraciones), así que no se pueden atribuir a una cuenta.
+- La ventana temporal (2025-07 en adelante) casi no se superpone con los períodos que
+  tienen etiqueta de churn: sólo **19 tickets** caen dentro.
+
+### Qué pedir en el re-export
+
+1. Sin límite de registros, **desde 2024-01**.
+2. La **tabla de Companies de Intercom**, con el atributo que guarda el ID de Fudo: es lo
+   que permite atribuir los tickets de soporte vía `Company ID` (presente en el 63%).
+3. **Sin la columna `Ticket Parts`** — las conversaciones son el 99% del peso (1 GB para
+   20.000 tickets) y el modelo no las necesita.
+
+Campos necesarios: `Ticket ID`, `Created At`, `Updated At`, `Company ID`, `Ticket Type`,
+`Ticket State`, `Category`, `Channel`, y de `Ticket Attributes`: `ID de dash`, `Tema`,
+`Motivo`, `Submotivo`, `Necesita derivación`.
