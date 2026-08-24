@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fudo · Riesgo de Churn</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">F</div>
+      <div>
+        <h1>Riesgo de Churn</h1>
+        <p class="brand-sub">Customer Experience · Fudo</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <label class="field">
+        <span>Periodo</span>
+        <select id="period-select"></select>
+      </label>
+      <div class="batch-meta" id="batch-meta"></div>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section class="kpis" id="kpis"></section>
+
+    <section class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Distribución del riesgo</h2>
+          <p>Cómo se reparte la probabilidad de baja en toda la base activa.</p>
+        </header>
+        <div id="histogram" class="histogram"></div>
+        <p class="legend" id="histogram-legend"></p>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Qué mira el modelo</h2>
+          <p>Impacto promedio de cada variable sobre el riesgo, en todo el lote.</p>
+        </header>
+        <div id="global-importance" class="importance"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <header class="card-head row">
+        <div>
+          <h2>Cuentas</h2>
+          <p id="table-caption">Ordenadas por revenue en riesgo.</p>
+        </div>
+        <div class="filters">
+          <input id="search" type="search" placeholder="Buscar por nombre o ID…" autocomplete="off">
+          <div class="chips" id="risk-filters"></div>
+        </div>
+      </header>
+
+      <div class="table-wrap">
+        <table id="accounts-table">
+          <thead>
+            <tr>
+              <th data-sort="id">Cuenta</th>
+              <th>Plan</th>
+              <th data-sort="churn_probability" class="num">Prob. de baja</th>
+              <th data-sort="monthly_revenue" class="num">Revenue / mes</th>
+              <th data-sort="revenue_at_risk" class="num">En riesgo</th>
+              <th>Categoría</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-body"></tbody>
+        </table>
+      </div>
+
+      <footer class="pager">
+        <button id="prev" class="ghost">← Anterior</button>
+        <span id="page-info"></span>
+        <button id="next" class="ghost">Siguiente →</button>
+      </footer>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-inner">
+      <button id="drawer-close" class="drawer-close" aria-label="Cerrar">×</button>
+      <div id="drawer-content"></div>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim"></div>
+
+</div>
+<!-- config.js lo genera el contenedor al arrancar con la URL de la API.
+     En desarrollo sin Docker no existe y el front cae al default localhost:8000. -->
+<script src="config.js" onerror="void 0"></script>
+<script src="app.js"></script>
+</body>
+</html>

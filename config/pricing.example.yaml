@@ -1,0 +1,113 @@
+# ============================================================================
+#  EJEMPLO - PRECIOS INVENTADOS, NO SON LOS PRECIOS REALES DE FUDO
+#
+#  Este archivo existe solo para poder correr el pipeline de punta a punta y ver
+#  el dashboard con datos coherentes antes de tener la lista de precios real.
+#
+#  Para produccion: completa `config/pricing.yaml` con los precios reales de la
+#  lista de Fudo en cada mercado. Nunca uses este archivo para decidir nada.
+#
+#  Uso:  churn score --pricing config/pricing.example.yaml
+# ============================================================================
+
+currency: USD
+default_market: int
+plans:
+  adv:
+    ar: 52.5
+    br: 63.0
+    cl: 70.0
+    co: 56.0
+    int: 77.0
+    mx: 66.5
+    uy: 63.0
+  ba:
+    ar: 26.25
+    br: 31.5
+    cl: 35.0
+    co: 28.0
+    int: 38.5
+    mx: 33.25
+    uy: 31.5
+  fu:
+    ar: 97.5
+    br: 117.0
+    cl: 130.0
+    co: 104.0
+    int: 143.0
+    mx: 123.5
+    uy: 117.0
+  ini:
+    ar: 18.75
+    br: 22.5
+    cl: 25.0
+    co: 20.0
+    mx: 23.75
+  pr:
+    ar: 71.25
+    cl: 95.0
+    mx: 90.25
+  pro:
+    ar: 71.25
+    br: 85.5
+    cl: 95.0
+    co: 76.0
+    int: 104.5
+    mx: 90.25
+    uy: 85.5
+  st:
+    ar: 37.5
+    br: 45.0
+    cl: 50.0
+    co: 40.0
+    int: 55.0
+    mx: 47.5
+    uy: 45.0
+modules:
+  dv:
+    ar: 13.5
+    br: 16.2
+    cl: 18.0
+    co: 14.4
+    int: 19.8
+    mx: 17.1
+    uy: 16.2
+  fe:
+    br: 10.8
+    cl: 12.0
+    co: 9.6
+  fi:
+    ar: 9.0
+    cl: 12.0
+    mx: 11.4
+  idvsls:
+    ar: 7.5
+    br: 9.0
+    cl: 10.0
+    co: 8.0
+    int: 11.0
+    mx: 9.5
+    uy: 9.0
+  kds:
+    ar: 15.0
+    br: 18.0
+    cl: 20.0
+    co: 16.0
+    int: 22.0
+    mx: 19.0
+    uy: 18.0
+  sbw:
+    ar: 18.75
+    br: 22.5
+  tbl:
+    ar: 11.25
+    br: 13.5
+    cl: 15.0
+    co: 12.0
+    int: 16.5
+    mx: 14.25
+    uy: 13.5
+  top:
+    co: 24.0
+    int: 33.0
+    uy: 27.0

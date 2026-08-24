@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------- datos ----
+# El snapshot del data warehouse contiene informacion de cuentas reales y pesa
+# ~160 MB: no va al repositorio. Se descarga del bucket o se pide al equipo de datos.
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Artefactos que genera el pipeline. Se reconstruyen con `make all`.
+outputs/
+models/*
+!models/.gitkeep
+
+# La lista de precios real es informacion comercial sensible; se versiona la
+# plantilla y el ejemplo, no el archivo con los precios cargados.
+config/pricing.yaml
+
+# ---------------------------------------------------------------- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Poetry: el lock SI se versiona (builds reproducibles), la config local no.
+poetry.toml
+
+# Testing y linting
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.tox/
+
+# Notebooks
+.ipynb_checkpoints/
+notebooks/**/*.html
+
+# ---------------------------------------------------------------- entorno --
+.env
+.env.*
+!.env.example
+*.local
+
+# Credenciales de GCP: nunca al repositorio.
+*.json.key
+service-account*.json
+gcp-credentials*.json
+application_default_credentials.json
+
+# ------------------------------------------------------------------- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ------------------------------------------------------------------ IDE ---
+.vscode/
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.claude/

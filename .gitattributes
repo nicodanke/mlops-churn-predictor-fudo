@@ -1,0 +1,32 @@
+# Normalizacion de fin de linea.
+#
+# Git for Windows viene con core.autocrlf=true, asi que al clonar convierte los archivos
+# de texto a CRLF. Para el codigo Python da igual, pero los scripts que se copian dentro
+# de una imagen Linux se rompen: el shebang queda como `#!/bin/sh\r` y el contenedor
+# responde "not found" sobre un archivo que existe, sin mencionar el motivo.
+#
+# Estas reglas fuerzan LF en todo lo que termina ejecutandose adentro de un contenedor.
+
+* text=auto eol=lf
+
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+*.dockerfile    text eol=lf
+Makefile        text eol=lf
+*.conf          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.py            text eol=lf
+*.toml          text eol=lf
+.env.example    text eol=lf
+
+# Binarios: que Git no los toque.
+*.parquet       binary
+*.joblib        binary
+*.pdf           binary
+*.png           binary
+*.jpg           binary
+*.csv           binary
+
+# Los notebooks son JSON: diffs mas legibles y sin conversiones raras.
+*.ipynb         text eol=lf

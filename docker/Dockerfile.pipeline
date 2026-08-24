@@ -1,0 +1,35 @@
+# Imagen del pipeline de ML: prepare, train y score.
+# Es la misma imagen que corre local con `make train` y como Cloud Run Job en GCP.
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    POETRY_VERSION=2.4.1 \
+    POETRY_VIRTUALENVS_CREATE=false
+
+# libgomp es la runtime de OpenMP que necesita XGBoost.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN pip install "poetry==${POETRY_VERSION}"
+
+WORKDIR /app
+
+# Las dependencias se instalan antes de copiar el codigo para aprovechar el cache
+# de capas: cambiar un .py no reinstala todo el entorno.
+COPY pyproject.toml poetry.lock README.md ./
+COPY src ./src
+RUN poetry install --only main --extras gcp
+
+COPY config ./config
+
+# Directorios montados como volumen en local y como bucket en GCP.
+RUN mkdir -p /app/data /app/models /app/outputs
+
+ENV CHURN_CONFIG=/app/config/model.yaml
+
+ENTRYPOINT ["churn"]
+CMD ["--help"]

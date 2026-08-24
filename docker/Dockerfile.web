@@ -1,0 +1,14 @@
+# Dashboard estatico servido por nginx.
+# La URL de la API se inyecta en tiempo de arranque via config.js, para que la misma
+# imagen sirva en local (localhost:8000) y en Cloud Run (la URL del servicio de API).
+
+FROM nginx:1.27-alpine
+
+COPY web/ /usr/share/nginx/html/
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/web-entrypoint.sh /docker-entrypoint.d/40-churn-config.sh
+
+RUN chmod +x /docker-entrypoint.d/40-churn-config.sh
+
+ENV CHURN_API_URL=http://localhost:8000
+EXPOSE 80

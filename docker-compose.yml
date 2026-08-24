@@ -1,0 +1,65 @@
+# Levanta el stack completo en local: pipeline (on-demand), API y dashboard.
+#
+#   make up          API en :8000 y dashboard en :8080
+#   make train       corre el entrenamiento dentro del contenedor del pipeline
+#   make score       genera el batch de predicciones
+#
+# Los volumenes hacen que el modelo y las predicciones que produce el pipeline queden
+# visibles para la API sin copiar nada entre imagenes.
+
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    image: churn-pipeline:local
+    volumes:
+      - ./data:/app/data:ro
+      - ./models:/app/models
+      - ./outputs:/app/outputs
+      - ./config:/app/config
+    environment:
+      CHURN_CONFIG: /app/config/model.yaml
+      CHURN_LOG_LEVEL: INFO
+    # El paso pesado es el feature engineering sobre las 707k filas del panel.
+    # Con menos de 4 GB el contenedor muere por OOM (exit 137) sin mensaje propio.
+    # Sobreescribir con PIPELINE_MEM si hace falta: PIPELINE_MEM=6g make docker-all
+    mem_limit: ${PIPELINE_MEM:-4g}
+    # El pipeline es un job, no un servicio: se ejecuta a demanda con `docker compose run`.
+    profiles: ["jobs"]
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    image: churn-api:local
+    ports:
+      # Configurable por si el 8000 ya esta tomado: API_PORT=8001 make up
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./outputs:/app/outputs:ro
+      - ./models:/app/models:ro
+    environment:
+      CHURN_API_PREDICTIONS_DIR: /app/outputs/predictions
+      CHURN_API_MODEL_DIR: /app/models
+      CHURN_API_CORS_ORIGINS: "*"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    image: churn-web:local
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    environment:
+      # El navegador del usuario resuelve esta URL, por eso es localhost y no `api`.
+      CHURN_API_URL: http://localhost:${API_PORT:-8000}
+    depends_on:
+      api:
+        condition: service_started

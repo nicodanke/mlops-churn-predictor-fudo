@@ -1,0 +1,138 @@
+# ============================================================================
+#  Configuracion del pipeline de prediccion de churn
+#  Todos los pasos (labeling -> features -> train -> score) leen de aca.
+# ============================================================================
+
+data:
+  # Snapshot mensual. Acepta un archivo, un directorio o un patron, ademas de
+  # gs://bucket/path para GCP:
+  #
+  #   "data/account_stats_since_2024.csv"   un archivo puntual
+  #   "data/"                               todos los .csv y .parquet del directorio
+  #   "data/account_stats_*.csv"            los que matcheen el patron
+  #
+  # Con un directorio, actualizar es dejar caer el archivo del mes nuevo: se concatenan
+  # solos y, si un (cuenta, periodo) viene repetido, gana el del archivo que ordena
+  # ultimo por nombre.
+  raw_path: "data/account_stats_since_2024.csv"
+  # Cache intermedio en parquet (mucho mas rapido que releer el CSV).
+  interim_path: "outputs/interim/panel.parquet"
+  features_path: "outputs/interim/features.parquet"
+
+labeling:
+  # Una cuenta esta "presente" en un periodo si aparece en el snapshot de ese mes
+  # (el reporte solo incluye cuentas con estado comercial ACTIVE).
+  #
+  # churn = 1  -> ausente en t+1 y tampoco reaparece dentro de la ventana de confirmacion
+  # churn = 0  -> presente en t+1
+  # ambiguo    -> ausente en t+1 pero reaparece dentro de la ventana (pausa / estacionalidad)
+  #
+  # Ventana de confirmacion en meses. Con 3, una cuenta que se va en t+1 pero vuelve
+  # en t+2 o t+3 NO cuenta como churn (es una pausa, no una baja).
+  confirm_window: 3
+  # Que hacer con las filas ambiguas al entrenar: "drop" (recomendado) | "negative"
+  ambiguous_policy: "drop"
+  # Antiguedad minima en el panel para entrenar. Evita aprender de cuentas recien
+  # creadas que todavia no tienen historia (y que tienen una dinamica de churn distinta).
+  min_months_in_panel: 2
+
+seasonality:
+  # Cuentas con estacionalidad de uso: restaurantes de temporada que cierran unos meses
+  # y reabren. En el snapshot se ven igual que una baja, pero no lo son, y entrenar con
+  # ellas le enseña al modelo que "dejar de operar en mayo" es churn.
+  #
+  # Ver `churn seasonality` para el reporte completo del fenomeno.
+
+  # Excluir esas cuentas de TRAIN y VAL (nunca de test: en produccion se scorean igual,
+  # asi que sacarlas del test daria una metrica mas linda que la realidad).
+  #
+  # Por defecto DESACTIVADO. Se midio el A/B y no aporta:
+  #
+  #   etiquetado con ventana de 3m   PR-AUC 0.6536 -> 0.6480  (-0.85%)
+  #   etiquetado ingenuo, sin ventana PR-AUC 0.6843 -> 0.6770  (-1.06%)
+  #
+  # La razon: son 1.117 cuentas sobre 56.202 (2%), y la mayoria de sus filas son meses
+  # de operacion normal, que es informacion valida. El ruido que la exclusion buscaba
+  # sacar — las filas donde la cuenta pausa — ya lo neutraliza la ventana de
+  # confirmacion del etiquetado, que las marca como ambiguas y las descarta.
+  #
+  # El mecanismo queda disponible (el ML Canvas lo pide) por si cambia la definicion
+  # de la etiqueta. El valor de detectarlas esta en otro lado: en el reporte
+  # `churn seasonality` y en el flag `posible_estacional` que acompaña cada prediccion.
+  exclude_from_training: false
+
+  # Cuantas pausas alcanzan para considerar que el patron es recurrente.
+  min_episodios: 2
+  # Una sola pausa alcanza si tiene firma de temporada: se fue en otoño (abr-jul),
+  # volvio en primavera/verano (oct-mar) y duro una temporada completa.
+  aceptar_firma_unica: true
+  duracion_min_temporada: 3
+  duracion_max_temporada: 8
+
+features:
+  # Meses de historia hacia atras usados para deltas y tendencias.
+  lags: [1, 2, 3]
+  # Ventana para medias moviles y pendientes.
+  rolling_window: 3
+  # Familias de features a excluir del entrenamiento (match por substring).
+  # Dejar vacio para usar todas. Ver `make train-sin-cobranza` para la variante que
+  # excluye el estado de cobranza y mide cuanta señal hay en el uso del producto solo.
+  exclude_patterns: []
+
+split:
+  # Split temporal estricto: nunca se entrena con periodos posteriores a los de test.
+  # Se expresa en cantidad de periodos etiquetables contando desde el mas reciente.
+  n_test_periods: 2
+  n_val_periods: 2
+
+model:
+  type: "xgboost"
+  params:
+    objective: "binary:logistic"
+    eval_metric: "aucpr"
+    n_estimators: 2000
+    learning_rate: 0.05
+    max_depth: 6
+    min_child_weight: 5
+    subsample: 0.8
+    colsample_bytree: 0.7
+    reg_lambda: 2.0
+    reg_alpha: 0.5
+    gamma: 0.0
+    tree_method: "hist"
+    n_jobs: -1
+    random_state: 42
+  early_stopping_rounds: 100
+  # Se calcula automaticamente como neg/pos si es null.
+  scale_pos_weight: null
+  # Calibracion de probabilidades: "isotonic" | "sigmoid" | null
+  calibration: "isotonic"
+
+evaluation:
+  # Umbral minimo de PR-AUC acordado con negocio para pasar a produccion.
+  min_pr_auc: 0.20
+  # Ks para precision@k / recall@k (fraccion de la base priorizada por CX).
+  top_k_fractions: [0.01, 0.05, 0.10, 0.20]
+
+risk:
+  # Umbral de probabilidad por debajo del cual la cuenta se clasifica "no_churn".
+  # Se puede fijar a mano o dejar en null para calibrarlo automaticamente sobre
+  # validacion buscando el punto de mejor F1.
+  no_churn_threshold: null
+  # Riesgo economico = probabilidad de churn * revenue mensual de la cuenta.
+  # Cortes en USD/mes de revenue en riesgo. Se aplican solo si prob >= no_churn_threshold.
+  revenue_at_risk_bands:
+    alto: 40.0    # >= 40 USD/mes en riesgo
+    medio: 15.0   # >= 15 USD/mes en riesgo
+    bajo: 0.0     # el resto
+
+explain:
+  # Cantidad de features que se guardan por prediccion para el mapa de calor.
+  top_n_features: 8
+  # Muestra maxima para el calculo de SHAP en batch (null = todas las filas).
+  max_rows: null
+
+scoring:
+  output_dir: "outputs/predictions"
+  # Formatos que consume la capa de aplicacion.
+  formats: ["parquet", "json"]

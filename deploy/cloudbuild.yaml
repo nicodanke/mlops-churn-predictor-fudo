@@ -1,0 +1,54 @@
+# Construye y publica las tres imagenes en Artifact Registry.
+#
+#   gcloud builds submit --config=deploy/cloudbuild.yaml \
+#     --substitutions=_REGION=southamerica-east1,_REPO=churn,_TAG=latest .
+#
+# Requiere que exista el repositorio:
+#   gcloud artifacts repositories create churn --repository-format=docker --location=$_REGION
+
+substitutions:
+  _REGION: southamerica-east1
+  _REPO: churn
+  _TAG: latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build-pipeline
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - docker/Dockerfile.pipeline
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/pipeline:${_TAG}
+      - .
+
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - -f
+      - docker/Dockerfile.api
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/api:${_TAG}
+      - .
+
+  - id: build-web
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - -f
+      - docker/Dockerfile.web
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:${_TAG}
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/pipeline:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/api:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:${_TAG}
