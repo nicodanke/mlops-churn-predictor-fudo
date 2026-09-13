@@ -260,6 +260,18 @@ gcp-cloudshell-score: ## [Cloud Shell] Predicciones del ultimo mes con un modelo
 gcp-cloudshell-serve: ## [Cloud Shell] API + dashboard para abrir con la Vista previa en la Web. PORT=8080
 	$(CLOUDSHELL) serve $(PORT)
 
+.PHONY: gcp-cloudshell-publish
+gcp-cloudshell-publish: ## [Cloud Shell] Publica API + dashboard en Cloud Run con una URL PUBLICA (sin login)
+	$(CLOUDSHELL) publish
+
+.PHONY: gcp-cloudshell-url
+gcp-cloudshell-url: ## [Cloud Shell] URL del dashboard publicado
+	@$(CLOUDSHELL) url
+
+.PHONY: gcp-cloudshell-unpublish
+gcp-cloudshell-unpublish: ## [Cloud Shell] Da de baja el dashboard publicado
+	$(CLOUDSHELL) unpublish
+
 .PHONY: gcp-cloudshell-models
 gcp-cloudshell-models: ## [Cloud Shell] Lista los modelos entrenados desde Cloud Shell
 	$(CLOUDSHELL) models

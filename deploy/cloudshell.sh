@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Entrenamiento, scoring y dashboard desde Cloud Shell, como en las clases 4 y 5.
+#  Entrenamiento, scoring y dashboard desde Cloud Shell, como en las clases 4 a 6.
 #
 #  Cloud Shell ya trae gcloud autenticado, asi que no hacen falta cuentas de servicio ni
 #  claves: el pipeline lee y escribe el bucket con las credenciales de la sesion. El
@@ -12,10 +12,15 @@
 #                      gs://BUCKET/models/cloudshell/RUN_ID (por defecto, fecha y hora UTC)
 #    models            lista los modelos entrenados desde Cloud Shell
 #    score [RUN_ID]    predicciones del ultimo mes con ese modelo (por defecto, el ultimo)
-#    serve [PUERTO]    API + dashboard en PUERTO (8080), para la Vista previa en la Web
+#    serve [PUERTO]    API + dashboard en PUERTO (8080), para la Vista previa en la Web.
+#                      Solo lo ve la cuenta duena de la sesion de Cloud Shell
+#    publish           publica API + dashboard en Cloud Run con una URL PUBLICA, sin login,
+#                      para compartir el link (servicio churn-demo)
+#    url               URL del servicio publicado
+#    unpublish         borra el servicio publicado
 #
 #  Variables opcionales: PROJECT_ID (por defecto el de `gcloud config`), BUCKET (por
-#  defecto PROJECT_ID-churn-fudo) y REGION.
+#  defecto PROJECT_ID-churn-fudo), REGION y CONFIRMAR=si (publish sin preguntar).
 # ============================================================================
 set -euo pipefail
 
@@ -36,6 +41,14 @@ WORKDIR=outputs/cloudshell
 PREDICTIONS=$WORKDIR/predictions
 MODEL_LOCAL=$WORKDIR/model
 
+# Servicio publico de `publish`. Es otro servicio que churn-app (deploy/cloudrun.sh), que
+# esta detras de Identity-Aware Proxy y a proposito no admite acceso publico.
+DEMO_SERVICE=churn-demo
+DEMO_SA="churn-demo@${PROJECT_ID}.iam.gserviceaccount.com"
+# Lo que lee el servicio publico, dentro del bucket: gs://BUCKET/demo/{predictions,model}.
+DEMO_PREFIX=demo
+DEMO_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/churn/api:cloudshell"
+
 POETRY_VERSION=2.4.1
 # Poetry vive en su propio entorno: el pip del sistema no deja instalar paquetes sueltos
 # (PEP 668).
@@ -48,6 +61,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 paso() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+gc() { gcloud "$@" --project="$PROJECT_ID"; }
 
 en_cloud_shell() { [[ "${CLOUD_SHELL:-}" == true ]]; }
 
@@ -74,6 +88,13 @@ requiere_entorno() {
   if ! .venv/bin/python -c 'import google.auth; google.auth.default()' >/dev/null 2>&1; then
     echo "Faltan las credenciales de Python para usar el bucket. Crearlas con:" >&2
     echo "    gcloud auth application-default login" >&2
+    exit 1
+  fi
+}
+
+requiere_predicciones() {
+  if ! ls "$PREDICTIONS"/*/predictions.parquet >/dev/null 2>&1; then
+    echo "No hay predicciones en ${PREDICTIONS}. Generarlas con: make gcp-cloudshell-score" >&2
     exit 1
   fi
 }
@@ -243,10 +264,7 @@ cmd_serve() {
     echo "Faltan las dependencias de la API. Correr: make gcp-cloudshell-setup" >&2
     exit 1
   fi
-  if ! ls "$PREDICTIONS"/*/predictions.parquet >/dev/null 2>&1; then
-    echo "No hay predicciones en ${PREDICTIONS}. Generarlas con: make gcp-cloudshell-score" >&2
-    exit 1
-  fi
+  requiere_predicciones
 
   # En Cloud Shell el puerto solo se ve por la Vista previa en la Web, que ya exige la
   # cuenta de Google duena de la sesion. En una computadora se escucha solo en localhost,
@@ -263,6 +281,7 @@ cmd_serve() {
       echo "  Elegir 'Cambiar puerto' y poner ${puerto}."
     fi
     echo "  Documentacion de la API: agregar /docs a la URL de la vista previa."
+    echo "  Esa URL solo abre con tu cuenta. Para compartir un link: make gcp-cloudshell-publish"
   else
     echo "  Dashboard: http://127.0.0.1:${puerto}"
     echo "  API:       http://127.0.0.1:${puerto}/docs"
@@ -280,6 +299,106 @@ cmd_serve() {
     exec ../.venv/bin/uvicorn app.main:app --host "$host" --port "$puerto"
 }
 
+cmd_publish() {
+  requiere_predicciones
+  if [[ ! -f "$MODEL_LOCAL/metadata.json" ]]; then
+    echo "Faltan los metadatos del modelo. Volver a correr: make gcp-cloudshell-score" >&2
+    exit 1
+  fi
+
+  # La URL no pide login: la ve cualquiera que la tenga, y el dashboard muestra nombres de
+  # cuentas reales con su riesgo y su facturacion. Se confirma cada vez a proposito.
+  printf '\n\033[1;33mATENCION:\033[0m el servicio %s queda PUBLICO. Cualquiera con la URL ve\n' "$DEMO_SERVICE"
+  echo "los datos de cuentas reales del dashboard, sin iniciar sesion. Darlo de baja con:"
+  echo "    make gcp-cloudshell-unpublish"
+  if [[ "${CONFIRMAR:-}" != si ]]; then
+    local respuesta
+    read -r -p "Escribir 'si' para publicar: " respuesta
+    if [[ "$respuesta" != si ]]; then
+      echo "Cancelado."
+      exit 1
+    fi
+  fi
+
+  paso "Habilitando APIs"
+  gc services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+
+  # El servicio no incluye los datos en la imagen: los lee del bucket montado. Asi,
+  # actualizar las predicciones no obliga a reconstruir nada.
+  paso "Subiendo predicciones a gs://${BUCKET}/${DEMO_PREFIX}/"
+  gcloud storage rsync --recursive --delete-unmatched-destination-objects \
+    "$PREDICTIONS/" "gs://${BUCKET}/${DEMO_PREFIX}/predictions/"
+  gcloud storage rsync --delete-unmatched-destination-objects \
+    "$MODEL_LOCAL/" "gs://${BUCKET}/${DEMO_PREFIX}/model/"
+
+  paso "Repositorio de imagenes"
+  if gc artifacts repositories describe churn --location="$REGION" >/dev/null 2>&1; then
+    echo "  ya existe"
+  else
+    gc artifacts repositories create churn \
+      --repository-format=docker \
+      --location="$REGION" \
+      --description="Imagenes del predictor de churn"
+  fi
+
+  # La misma imagen que churn-app: API de solo lectura + dashboard. Cloud Build recibe el
+  # codigo sin data/ ni outputs/ (ver .gcloudignore).
+  paso "Construyendo la imagen de la API con Cloud Build (~2 min)"
+  local build_config
+  build_config=$(mktemp)
+  trap "rm -f '$build_config'" EXIT
+  cat >"$build_config" <<EOF
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, docker/Dockerfile.api, -t, "${DEMO_IMAGE}", .]
+images: ["${DEMO_IMAGE}"]
+options:
+  logging: CLOUD_LOGGING_ONLY
+EOF
+  gc builds submit --config="$build_config" .
+
+  # Permiso minimo: la app solo lee el bucket.
+  paso "Cuenta de servicio ${DEMO_SA}"
+  if ! gc iam service-accounts describe "$DEMO_SA" >/dev/null 2>&1; then
+    gc iam service-accounts create "$DEMO_SERVICE" --display-name="Churn: dashboard publico"
+    # Una cuenta recien creada tarda unos segundos en poder recibir permisos.
+    sleep 15
+  fi
+  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+    --member="serviceAccount:${DEMO_SA}" \
+    --role=roles/storage.objectViewer >/dev/null
+
+  # Escala a cero: sin visitas no cuesta nada. gen2 hace falta para montar el bucket.
+  paso "Desplegando ${DEMO_SERVICE} en Cloud Run"
+  gc run deploy "$DEMO_SERVICE" \
+    --region="$REGION" \
+    --image="$DEMO_IMAGE" \
+    --service-account="$DEMO_SA" \
+    --execution-environment=gen2 \
+    --cpu=1 --memory=1Gi \
+    --min-instances=0 --max-instances=2 \
+    --allow-unauthenticated \
+    --set-env-vars="CHURN_API_PREDICTIONS_DIR=/mnt/gcs/${DEMO_PREFIX}/predictions,CHURN_API_MODEL_DIR=/mnt/gcs/${DEMO_PREFIX}/model,CHURN_API_CORS_ORIGINS=" \
+    --clear-volumes \
+    --add-volume="name=gcs,type=cloud-storage,bucket=${BUCKET},readonly=true,mount-options=implicit-dirs" \
+    --clear-volume-mounts \
+    --add-volume-mount="volume=gcs,mount-path=/mnt/gcs"
+
+  local url
+  url=$(gc run services describe "$DEMO_SERVICE" --region="$REGION" --format='value(status.url)')
+  echo ""
+  echo "  Dashboard publico: ${url}"
+  echo "  API:               ${url}/docs"
+  echo "  Actualizar datos:  make gcp-cloudshell-score && make gcp-cloudshell-publish"
+  echo "  Dar de baja:       make gcp-cloudshell-unpublish"
+}
+
+cmd_unpublish() {
+  gc run services delete "$DEMO_SERVICE" --region="$REGION"
+  echo "Las predicciones siguen en gs://${BUCKET}/${DEMO_PREFIX}/. Para borrarlas:"
+  echo "    gcloud storage rm -r gs://${BUCKET}/${DEMO_PREFIX}/"
+}
+
 case "${1:-}" in
   setup) cmd_setup ;;
   upload) shift; cmd_upload "$@" ;;
@@ -287,8 +406,11 @@ case "${1:-}" in
   models) gcloud storage ls "${MODELS}/" ;;
   score) shift; cmd_score "$@" ;;
   serve) shift; cmd_serve "$@" ;;
+  publish) cmd_publish ;;
+  url) gc run services describe "$DEMO_SERVICE" --region="$REGION" --format='value(status.url)' ;;
+  unpublish) cmd_unpublish ;;
   *)
-    sed -n '3,19p' "$0" >&2
+    sed -n '3,24p' "$0" >&2
     exit 1
     ;;
 esac

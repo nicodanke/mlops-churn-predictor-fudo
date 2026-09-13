@@ -327,10 +327,43 @@ puerto 8080*. La documentación interactiva de la API está en `/docs` de esa mi
   ilustrativo). Para usar los reales en Cloud Shell:
   `gcloud storage cp config/pricing.yaml gs://PROYECTO-churn-fudo/config/pricing.yaml`.
 - **Quién puede entrar.** La URL de la vista previa solo abre con la cuenta de Google dueña
-  de la sesión de Cloud Shell, y deja de responder al cortar el proceso o cerrar la sesión.
-  Sirve para probar y para mostrarlo en clase. Para que el equipo de CX entre con una URL
-  fija está el despliegue en Cloud Run detrás de IAP (`make gcp-deploy-app`).
+  de la sesión de Cloud Shell: a cualquier otra persona le devuelve un error. Además deja
+  de responder al cortar el proceso o cerrar la sesión. Para compartir un link, ver abajo.
 - Fuera de Cloud Shell el mismo comando levanta todo en `http://127.0.0.1:8080`.
+
+### Compartir el dashboard con un link público
+
+Como en la clase 6: la misma API + dashboard, publicada en Cloud Run con
+`--allow-unauthenticated`.
+
+> **El link no pide login.** Cualquiera que lo tenga ve los nombres de las cuentas, su
+> riesgo y su facturación. El comando pide confirmación cada vez. Para que solo entren
+> personas autorizadas está el despliegue detrás de IAP (`make gcp-deploy-app`, ver
+> [Autenticación](#autenticación)).
+
+Después de `make gcp-cloudshell-score`:
+
+```bash
+make gcp-cloudshell-publish     # ~3-4 min la primera vez; imprime la URL
+make gcp-cloudshell-url         # volver a ver la URL
+make gcp-cloudshell-unpublish   # darlo de baja
+```
+
+Qué hace:
+
+1. Sube las predicciones y los metadatos del modelo a `gs://PROYECTO-churn-fudo/demo/`.
+2. Construye la imagen de la API con Cloud Build. `.gcloudignore` deja afuera `data/` y
+   `outputs/`, así que los datos crudos nunca salen del bucket.
+3. Crea la cuenta de servicio `churn-demo`, con permiso solo de lectura sobre el bucket.
+4. Despliega el servicio `churn-demo`, con el bucket montado de solo lectura. Es un
+   servicio distinto de `churn-app`, que sigue siempre detrás de IAP.
+
+Para actualizar los datos: `make gcp-cloudshell-score && make gcp-cloudshell-publish`.
+Escala a cero, así que sin visitas no cuesta nada.
+
+Si el deploy falla con un error de *organization policy* sobre `allUsers`, el proyecto
+pertenece a una organización que prohíbe servicios públicos. En ese caso la única opción
+es el despliegue con IAP.
 
 **Memoria.** El feature engineering llega a ~4 GB. Si la VM de Cloud Shell tiene menos, el
 script avisa antes de arrancar, y el proceso puede terminar en `Killed`. En ese caso hay
