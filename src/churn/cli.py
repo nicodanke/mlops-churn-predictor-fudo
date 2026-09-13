@@ -7,6 +7,8 @@ churn pricing-template     genera / actualiza config/pricing.yaml
 churn pricing-check        muestra cuanto falta completar de la lista de precios
 churn baseline             churn rate observado por periodo
 churn run-all              prepare + train + score, de punta a punta
+churn retrain              entrena un candidato y decide si le gana al modelo en produccion
+churn promote              publica un candidato como campeon (o hace rollback)
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.table import Table
 
 from churn import pipeline
@@ -30,6 +33,7 @@ from churn.data.seasonality import (
     seasonality_by_country,
 )
 from churn.logging_setup import setup_logging
+from churn.models import promotion
 from churn.models.artifact import load_model
 from churn.pricing.revenue import PricingBook
 from churn.pricing.template import build_pricing_template, pricing_coverage
@@ -93,6 +97,65 @@ def train(config: str | None = ConfigOpt, model_dir: str = ModelDirOpt) -> None:
 
     console.print("\n[bold]Features mas importantes (ganancia)[/bold]")
     _print_df(report["feature_importance"].head(15))
+
+
+@app.command()
+def retrain(
+    config: str | None = ConfigOpt,
+    candidate_dir: str = typer.Option(
+        ..., "--candidate-dir", help="Donde guardar el modelo candidato."
+    ),
+    champion_dir: str | None = typer.Option(
+        None, "--champion-dir", help="Modelo en produccion contra el que se compara."
+    ),
+    version: str = typer.Option("", "--version", help="Identificador del candidato (SHA)."),
+    force: bool = typer.Option(
+        True, "--force/--use-cache", help="Recalcular las features o reusar el cache."
+    ),
+    force_promote: bool = typer.Option(
+        False,
+        "--force-promote",
+        help="Promover aunque no mejore al campeon. El umbral de negocio se exige igual.",
+    ),
+) -> None:
+    """Entrena un candidato y decide si reemplaza al modelo en produccion.
+
+    Es el paso que corre CI en cada cambio del modelo. Deja el candidato y su
+    decision.json en --candidate-dir; la promocion es un paso aparte (`churn promote`).
+    """
+    cfg = Config.load(config)
+    features = pipeline.prepare(cfg, force=force)
+    artifact, _ = pipeline.train(cfg, features, model_dir=candidate_dir)
+
+    decision = promotion.challenge(
+        features, cfg, artifact, champion_dir, version=version, force=force_promote
+    )
+    path = promotion.write_decision(decision, candidate_dir)
+    console.print(Markdown(decision.to_markdown()))
+    console.print(f"  decision -> {path}")
+
+
+@app.command()
+def promote(
+    candidate_dir: str = typer.Option(..., "--candidate-dir", help="Modelo a publicar."),
+    champion_dir: str = typer.Option(..., "--champion-dir", help="Directorio del campeon."),
+    registry: str | None = typer.Option(
+        None, "--registry", help="Historial de versiones. Por defecto registry.json al lado."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Promover aunque la decision haya sido negativa (rollback)."
+    ),
+) -> None:
+    """Publica un candidato como campeon y lo anota en el historial de versiones."""
+    try:
+        release = promotion.promote(candidate_dir, champion_dir, registry, force=force)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Campeon[/green]: {release['version']} "
+        f"(antes {release['previous_version'] or 'ninguno'})"
+    )
 
 
 @app.command()
@@ -320,7 +383,14 @@ def seasonality(
         top["mes_baja"] = top["mes_baja_modal"].map(lambda m: NOMBRE_MES[int(m) - 1])
         top["mes_alta"] = top["mes_alta_modal"].map(lambda m: NOMBRE_MES[int(m) - 1])
         columnas = [
-            "id", "nombre", "pais", "tipo", "n_pausas", "duracion_media", "mes_baja", "mes_alta",
+            "id",
+            "nombre",
+            "pais",
+            "tipo",
+            "n_pausas",
+            "duracion_media",
+            "mes_baja",
+            "mes_alta",
         ]
         _print_df(top[columnas])
 

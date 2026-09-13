@@ -1,0 +1,45 @@
+# Lint y tests. Corre en cada pull request y como primer paso del despliegue.
+# No toca GCP ni necesita los datos: los tests usan paneles sinteticos.
+
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint y tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Poetry
+        run: pipx install poetry==2.4.1
+
+      # XGBoost y SHAP tardan en instalarse; el entorno se reusa mientras no cambie el lock.
+      - name: Cache del entorno
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.12-${{ hashFiles('poetry.lock') }}
+
+      # El extra `api` hace falta para los tests de la API (dashboard y sesion de IAP).
+      - name: Instalar dependencias
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --with dev --extras api --no-interaction
+
+      - name: Lint
+        run: poetry run ruff check src api tests
+
+      - name: Tests
+        run: poetry run pytest -q
