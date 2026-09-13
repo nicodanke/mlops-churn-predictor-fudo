@@ -1,0 +1,75 @@
+name: Construir y publicar imagen
+description: >
+  Construye una imagen del proyecto y la sube a Artifact Registry con el SHA del commit
+  como tag. Si ese commit ya tiene imagen (un re-run, o el reentrenamiento mensual sin
+  cambios de codigo) no construye nada.
+
+inputs:
+  name:
+    description: pipeline | api | web
+    required: true
+  dockerfile:
+    description: Ruta al Dockerfile
+    required: true
+  registry:
+    description: REGION-docker.pkg.dev/PROYECTO/REPO
+    required: true
+  workload_identity_provider:
+    required: true
+  service_account:
+    required: true
+
+outputs:
+  image:
+    description: Referencia completa de la imagen publicada
+    value: ${{ steps.ref.outputs.image }}
+
+runs:
+  using: composite
+  steps:
+    - id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        token_format: access_token
+
+    - uses: google-github-actions/setup-gcloud@v2
+
+    - id: ref
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        NAME: ${{ inputs.name }}
+      run: |
+        image="${REGISTRY}/${NAME}:${GITHUB_SHA}"
+        echo "image=${image}" >> "$GITHUB_OUTPUT"
+        echo "host=${REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+        if gcloud artifacts docker images describe "$image" >/dev/null 2>&1; then
+          echo "La imagen ${image} ya existe: no se reconstruye."
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: steps.ref.outputs.exists == 'false'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ steps.ref.outputs.host }}
+        username: oauth2accesstoken
+        password: ${{ steps.auth.outputs.access_token }}
+
+    - if: steps.ref.outputs.exists == 'false'
+      uses: docker/setup-buildx-action@v3
+
+    # El cache de capas vive en GitHub (gratis), no en Artifact Registry: cambiar un .py
+    # no reinstala XGBoost ni vuelve a subir esas capas.
+    - if: steps.ref.outputs.exists == 'false'
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ${{ inputs.dockerfile }}
+        push: true
+        tags: ${{ steps.ref.outputs.image }}
+        cache-from: type=gha,scope=${{ inputs.name }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.name }}

@@ -114,6 +114,23 @@ evaluation:
   # Ks para precision@k / recall@k (fraccion de la base priorizada por CX).
   top_k_fractions: [0.01, 0.05, 0.10, 0.20]
 
+promotion:
+  # Champion / challenger: cuando un modelo reentrenado reemplaza al de produccion.
+  # El candidato se promueve solo si:
+  #   1. pasa evaluation.min_pr_auc (el umbral de negocio), y
+  #   2. evaluado sobre el MISMO test que el campeon, mejora `metric` en al menos
+  #      `min_improvement`, y
+  #   3. ninguna metrica de `max_regression` cae mas que su tolerancia.
+  # Ver src/churn/models/promotion.py.
+  metric: "pr_auc"
+  # Reentrenar el mismo codigo sobre los mismos datos da la misma metrica en la misma
+  # maquina, pero cambios chicos (una feature que casi no pesa, un mes mas de datos)
+  # mueven el PR-AUC en el tercer decimal. Este margen evita reemplazar el modelo en
+  # produccion por uno que "gana" por ruido.
+  min_improvement: 0.005
+  max_regression:
+    roc_auc: 0.01
+
 risk:
   # Umbral de probabilidad por debajo del cual la cuenta se clasifica "no_churn".
   # Se puede fijar a mano o dejar en null para calibrarlo automaticamente sobre

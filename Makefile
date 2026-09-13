@@ -19,12 +19,17 @@ RUN         := $(POETRY) run
 COMPOSE     ?= docker compose
 DC_RUN      := $(COMPOSE) --profile jobs run --rm pipeline
 
-# Configuracion de despliegue en GCP. Sobreescribir por entorno o en .env.
-GCP_PROJECT ?= tu-proyecto-gcp
-GCP_REGION  ?= southamerica-east1
+# Configuracion de despliegue en GCP. Sobreescribir por linea de comando o en .env.
+# us-central1 por costo: es tier 1 de Cloud Run y entra en el free tier de Cloud Storage.
+GCP_PROJECT ?= $(or $(shell sed -n 's/^GCP_PROJECT=//p' .env 2>/dev/null | head -1),tu-proyecto-gcp)
+GCP_REGION  ?= $(or $(shell sed -n 's/^GCP_REGION=//p' .env 2>/dev/null | head -1),us-central1)
 GCP_REPO    ?= churn
+# Sin "-fudo" choca con el bucket que crea el lab de la clase 4.
+GCP_BUCKET  ?= $(GCP_PROJECT)-churn-fudo
+GITHUB_REPO ?= nicodanke/mlops-churn-predictor-fudo
 IMAGE_BASE  := $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/$(GCP_REPO)
-TAG         ?= latest
+# Las imagenes se etiquetan con el SHA del commit que las construyo.
+TAG         ?= $(shell git rev-parse HEAD 2>/dev/null)
 
 .PHONY: help
 help: ## Muestra esta ayuda
@@ -211,33 +216,99 @@ clean: ## Borra caches y artefactos intermedios (no toca data/ ni models/)
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
 # ------------------------------------------------------------------- GCP ---
+# El despliegue normal es automatico (.github/workflows/deploy.yml). Estos targets son
+# para la puesta a punto inicial y para operar a mano, y llaman al mismo
+# deploy/cloudrun.sh que el workflow: hacen exactamente lo mismo que CI.
+
+GCP_ENV = PROJECT_ID=$(GCP_PROJECT) REGION=$(GCP_REGION) BUCKET=$(GCP_BUCKET) PROJECT_NUMBER=$$(gcloud projects describe $(GCP_PROJECT) --format='value(projectNumber)')
+CLOUDRUN = $(GCP_ENV) bash deploy/cloudrun.sh
+
+.PHONY: gcp-bootstrap
+gcp-bootstrap: ## Puesta a punto inicial de GCP (una vez): bucket, registry, permisos, WIF
+	PROJECT_ID=$(GCP_PROJECT) REGION=$(GCP_REGION) BUCKET=$(GCP_BUCKET) \
+	GITHUB_REPO=$(GITHUB_REPO) bash deploy/bootstrap.sh
+
+.PHONY: gcp-upload-data
+gcp-upload-data: ## Sube un snapshot comprimido al bucket. FILE=data/account_stats_AAAAMM.csv
+	@test -n "$(FILE)" || { echo "Uso: make gcp-upload-data FILE=data/account_stats_202609.csv"; exit 1; }
+	@# Sin este chequeo, un FILE inexistente subia un objeto vacio al bucket.
+	@test -s "$(FILE)" || { echo "No existe o esta vacio: $(FILE)"; exit 1; }
+	set -o pipefail; gzip -c "$(FILE)" | gcloud storage cp - gs://$(GCP_BUCKET)/raw/$$(basename "$(FILE)").gz
+
+# Entrenamiento desde Cloud Shell, como en el lab de la clase 4 (ver deploy/cloudshell.sh).
+# Se corren dentro de Cloud Shell y toman el proyecto de `gcloud config`.
+CLOUDSHELL = bash deploy/cloudshell.sh
+
+.PHONY: gcp-cloudshell-setup
+gcp-cloudshell-setup: ## [Cloud Shell] Instala las dependencias y crea el bucket
+	$(CLOUDSHELL) setup
+
+.PHONY: gcp-cloudshell-upload
+gcp-cloudshell-upload: ## [Cloud Shell] Sube un snapshot al bucket. FILE=~/account_stats_AAAAMM.csv
+	@test -n "$(FILE)" || { echo "Uso: make gcp-cloudshell-upload FILE=~/account_stats_202609.csv"; exit 1; }
+	$(CLOUDSHELL) upload "$(FILE)"
+
+.PHONY: gcp-cloudshell-train
+gcp-cloudshell-train: ## [Cloud Shell] Entrena y guarda el modelo en gs://BUCKET/models/cloudshell/. RUN_ID opcional
+	$(CLOUDSHELL) train $(RUN_ID)
+
+.PHONY: gcp-cloudshell-score
+gcp-cloudshell-score: ## [Cloud Shell] Predicciones del ultimo mes con un modelo del bucket. RUN_ID opcional (por defecto el ultimo)
+	$(CLOUDSHELL) score $(RUN_ID)
+
+.PHONY: gcp-cloudshell-serve
+gcp-cloudshell-serve: ## [Cloud Shell] API + dashboard para abrir con la Vista previa en la Web. PORT=8080
+	$(CLOUDSHELL) serve $(PORT)
+
+.PHONY: gcp-cloudshell-models
+gcp-cloudshell-models: ## [Cloud Shell] Lista los modelos entrenados desde Cloud Shell
+	$(CLOUDSHELL) models
 
 .PHONY: gcp-build
-gcp-build: ## Construye y sube las imagenes a Artifact Registry
-	gcloud builds submit --config=deploy/cloudbuild.yaml \
+gcp-build: ## Construye las imagenes con Cloud Build (alternativa manual a GitHub Actions)
+	gcloud builds submit --project=$(GCP_PROJECT) --config=deploy/cloudbuild.yaml \
 		--substitutions=_REGION=$(GCP_REGION),_REPO=$(GCP_REPO),_TAG=$(TAG) .
 
-.PHONY: gcp-deploy-api
-gcp-deploy-api: ## Despliega la API en Cloud Run
-	gcloud run deploy churn-api \
-		--image=$(IMAGE_BASE)/api:$(TAG) \
-		--region=$(GCP_REGION) --platform=managed --allow-unauthenticated \
-		--memory=1Gi --cpu=1 --min-instances=0 --max-instances=4
+.PHONY: gcp-retrain
+gcp-retrain: ## Entrena un candidato con la imagen TAG y lo compara contra el campeon
+	$(CLOUDRUN) train-job $(IMAGE_BASE)/pipeline:$(TAG)
+	$(CLOUDRUN) retrain $(TAG)
+	$(CLOUDRUN) decision $(TAG) md
 
-.PHONY: gcp-deploy-web
-gcp-deploy-web: ## Despliega el dashboard en Cloud Run
-	gcloud run deploy churn-web \
-		--image=$(IMAGE_BASE)/web:$(TAG) \
-		--region=$(GCP_REGION) --platform=managed --allow-unauthenticated \
-		--memory=256Mi --min-instances=0 --max-instances=2
+.PHONY: gcp-release
+gcp-release: ## Promueve la version TAG y regenera predicciones. FORCE=1 para rollback
+	$(CLOUDRUN) release $(TAG) $(if $(FORCE),--force)
 
-.PHONY: gcp-deploy-job
-gcp-deploy-job: ## Crea/actualiza el Cloud Run Job del pipeline batch
-	gcloud run jobs deploy churn-pipeline \
-		--image=$(IMAGE_BASE)/pipeline:$(TAG) \
-		--region=$(GCP_REGION) --memory=4Gi --cpu=2 --task-timeout=3600 \
-		--args=run-all
+.PHONY: gcp-score
+gcp-score: ## Corre el scoring con el campeon actual, a demanda
+	$(CLOUDRUN) score
 
-.PHONY: gcp-run-job
-gcp-run-job: ## Ejecuta el job batch en GCP a demanda
-	gcloud run jobs execute churn-pipeline --region=$(GCP_REGION) --wait
+.PHONY: gcp-deploy-app
+gcp-deploy-app: ## Despliega API + dashboard detras de IAP con la imagen TAG
+	$(CLOUDRUN) app $(IMAGE_BASE)/api:$(TAG)
+
+.PHONY: gcp-iap-oauth
+gcp-iap-oauth: ## Cliente OAuth propio para IAP (cuentas de fuera de la organizacion)
+	@$(CLOUDRUN) iap-oauth
+
+.PHONY: gcp-grant
+gcp-grant: ## Da acceso a la app. MEMBER=user:ana@fu.do | group:cx@fu.do | domain:fu.do
+	@test -n "$(MEMBER)" || { echo "Uso: make gcp-grant MEMBER=user:ana@fu.do"; exit 1; }
+	@$(CLOUDRUN) grant "$(MEMBER)"
+
+.PHONY: gcp-revoke
+gcp-revoke: ## Quita el acceso a la app. MEMBER=user:ana@fu.do
+	@test -n "$(MEMBER)" || { echo "Uso: make gcp-revoke MEMBER=user:ana@fu.do"; exit 1; }
+	@$(CLOUDRUN) revoke "$(MEMBER)"
+
+.PHONY: gcp-access
+gcp-access: ## Lista quien tiene acceso a la app
+	@$(CLOUDRUN) access
+
+.PHONY: gcp-registry
+gcp-registry: ## Historial de versiones promovidas a produccion
+	gcloud storage cat gs://$(GCP_BUCKET)/models/registry.json
+
+.PHONY: gcp-url
+gcp-url: ## URL de la app (pide iniciar sesion con Google)
+	@$(CLOUDRUN) url

@@ -62,16 +62,7 @@ def temporal_split(
     intermedios: cada `.copy()` sobre este panel son cientos de megabytes, y el
     encadenado de copias es lo que hacia que el pipeline no entrara en un contenedor.
     """
-    elegible = df["churn"].notna()
-
-    if min_months_in_panel > 1:
-        suficiente_historia = df["months_in_panel"] >= min_months_in_panel
-        logger.info(
-            "Filtradas %s filas de cuentas con menos de %s meses de historia",
-            f"{int((elegible & ~suficiente_historia).sum()):,}",
-            min_months_in_panel,
-        )
-        elegible &= suficiente_historia
+    elegible = _eligible_rows(df, min_months_in_panel)
 
     excluida = (
         df["id"].isin(exclude_account_ids)
@@ -80,15 +71,9 @@ def temporal_split(
     )
 
     periods = sorted(df.loc[elegible, "periodo"].unique())
-    if len(periods) <= n_test_periods + n_val_periods:
-        raise ValueError(
-            f"Solo hay {len(periods)} periodos etiquetables; no alcanzan para un split "
-            f"de {n_val_periods} de validacion + {n_test_periods} de test."
-        )
-
-    test_periods = periods[-n_test_periods:]
-    val_periods = periods[-(n_test_periods + n_val_periods) : -n_test_periods]
-    train_periods = periods[: -(n_test_periods + n_val_periods)]
+    train_periods, val_periods, test_periods = _partition_periods(
+        periods, n_test_periods, n_val_periods
+    )
 
     # Las cuentas estacionales se sacan de train y val, pero NO de test.
     #
@@ -119,3 +104,53 @@ def temporal_split(
     )
     logger.info("Split temporal:\n%s", split.summary().to_string(index=False))
     return split
+
+
+def holdout_frame(
+    df: pd.DataFrame,
+    n_test_periods: int = 2,
+    n_val_periods: int = 2,
+    min_months_in_panel: int = 2,
+) -> pd.DataFrame:
+    """El test del split temporal, sin materializar train ni val.
+
+    Lo usa la comparacion champion / challenger para scorear el modelo en produccion
+    sobre exactamente las mismas filas con las que se evaluo el candidato.
+    """
+    elegible = _eligible_rows(df, min_months_in_panel)
+    periods = sorted(df.loc[elegible, "periodo"].unique())
+    _, _, test_periods = _partition_periods(periods, n_test_periods, n_val_periods)
+    seleccion = df[elegible & df["periodo"].isin(test_periods)]
+    return seleccion.assign(churn=seleccion["churn"].astype("int8"))
+
+
+def _eligible_rows(df: pd.DataFrame, min_months_in_panel: int) -> pd.Series:
+    """Filas con etiqueta y con historia suficiente para entrar al split."""
+    elegible = df["churn"].notna()
+
+    if min_months_in_panel > 1:
+        suficiente_historia = df["months_in_panel"] >= min_months_in_panel
+        logger.info(
+            "Filtradas %s filas de cuentas con menos de %s meses de historia",
+            f"{int((elegible & ~suficiente_historia).sum()):,}",
+            min_months_in_panel,
+        )
+        elegible &= suficiente_historia
+
+    return elegible
+
+
+def _partition_periods(
+    periods: list[int], n_test_periods: int, n_val_periods: int
+) -> tuple[list[int], list[int], list[int]]:
+    """Reparte los periodos etiquetables en (train, val, test), del mas viejo al mas nuevo."""
+    if len(periods) <= n_test_periods + n_val_periods:
+        raise ValueError(
+            f"Solo hay {len(periods)} periodos etiquetables; no alcanzan para un split "
+            f"de {n_val_periods} de validacion + {n_test_periods} de test."
+        )
+
+    test_periods = periods[-n_test_periods:]
+    val_periods = periods[-(n_test_periods + n_val_periods) : -n_test_periods]
+    train_periods = periods[: -(n_test_periods + n_val_periods)]
+    return train_periods, val_periods, test_periods
