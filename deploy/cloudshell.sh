@@ -76,6 +76,18 @@ memoria_gb() {
   fi
 }
 
+# El feature engineering llega a ~4 GB, y lo corren por igual train, score y drift cuando
+# no hay cache. Con menos memoria el proceso muere con un "Killed" y nada mas: mejor
+# avisarlo antes de esperar varios minutos.
+aviso_memoria() {
+  local mem_gb
+  mem_gb=$(memoria_gb)
+  if [[ -n "$mem_gb" ]] && awk -v m="$mem_gb" 'BEGIN {exit !(m < 4)}'; then
+    echo "Aviso: esta maquina tiene ${mem_gb} GB de RAM y el pipeline necesita ~4 GB." >&2
+    echo "Si termina en 'Killed', correrlo en local (make train) y reusar el modelo del bucket." >&2
+  fi
+}
+
 # Dependencias instaladas y credenciales para que Python lea y escriba el bucket.
 requiere_entorno() {
   if [[ ! -x .venv/bin/churn ]]; then
@@ -189,16 +201,7 @@ cmd_train() {
   local model_dir="${MODELS}/${run_id}"
 
   requiere_entorno
-
-  # El feature engineering llega a ~4 GB. Con menos memoria el proceso muere con un
-  # "Killed" y nada mas: mejor avisarlo antes de esperar varios minutos.
-  local mem_gb
-  mem_gb=$(memoria_gb)
-  if [[ -n "$mem_gb" ]] && awk -v m="$mem_gb" 'BEGIN {exit !(m < 4)}'; then
-    echo "Aviso: esta maquina tiene ${mem_gb} GB de RAM y el pipeline necesita ~4 GB." >&2
-    echo "Si termina en 'Killed', entrenar en local con: make train" >&2
-  fi
-
+  aviso_memoria
   bajar_snapshots
 
   paso "Entrenando -> ${model_dir}"
@@ -232,6 +235,7 @@ cmd_score() {
   model_dir=$(modelo_elegido "${1:-}") || exit 1
 
   requiere_entorno
+  aviso_memoria
   bajar_snapshots
   mkdir -p "$WORKDIR"
 
@@ -270,6 +274,7 @@ cmd_drift() {
   model_dir=$(modelo_elegido "${1:-}") || exit 1
 
   requiere_entorno
+  aviso_memoria
   bajar_snapshots
 
   paso "Drift del ultimo mes contra los datos con los que se entreno ${model_dir}"

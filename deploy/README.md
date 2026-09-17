@@ -7,6 +7,10 @@ reentrena y lo pasa a producción **solo si le gana al que ya está**.
 La app **no es pública**: para ver el dashboard o consultar la API hay que iniciar sesión
 con una cuenta de Google que esté en la lista de acceso. Ver [Autenticación](#autenticación).
 
+> ¿Buscás los comandos, en orden, para correrlo a mano desde Cloud Shell —entrenar,
+> scorear, publicar el dashboard, monitorear, reentrenar y limpiar? Están en el
+> [runbook](runbook.md). Este documento explica cómo está armado el sistema y por qué.
+
 ## Arquitectura
 
 | Pieza | Servicio | Por qué |
@@ -362,26 +366,40 @@ Para actualizar los datos: `make gcp-cloudshell-score && make gcp-cloudshell-pub
 
 #### Los mismos pasos, uno por uno
 
-`publish` hace todo junto y construye con Cloud Build. Si preferís el recorrido de la
-clase 6 —construir con Docker, publicar en el registry y desplegar—, cada paso tiene su
-target y termina en el mismo servicio `churn-demo`:
+`publish` hace todo junto y construye con Cloud Build. El recorrido de la clase 6 es el
+mismo destino con un comando por paso: **construir la imagen con Docker, publicarla en
+Artifact Registry y levantar Cloud Run desde esa imagen**. Termina en el mismo servicio
+`churn-demo`.
+
+Puesta a punto, una vez:
 
 ```bash
-make gcp-docker-auth GCP_PROJECT=mi-proyecto   # una vez por máquina: Docker puede publicar
-make gcp-run-repo    GCP_PROJECT=mi-proyecto   # una vez por proyecto: repositorio de imágenes
-make gcp-run-sa      GCP_PROJECT=mi-proyecto   # una vez por proyecto: cuenta de servicio
-
-make gcp-run-build   GCP_PROJECT=mi-proyecto   # docker build de la imagen de la API
-make gcp-run-local                             # opcional: probarla en :8000 antes de subirla
-make gcp-run-push    GCP_PROJECT=mi-proyecto   # docker push al registry
-make gcp-run-data    GCP_PROJECT=mi-proyecto   # sube las predicciones al bucket
-make gcp-run-deploy  GCP_PROJECT=mi-proyecto   # gcloud run deploy con esa imagen
+make gcp-docker-auth   # por máquina o sesión: autoriza a Docker a publicar en el registry
+make gcp-run-repo      # por proyecto: habilita las APIs y crea el repositorio de imágenes
+make gcp-run-sa        # por proyecto: cuenta de servicio, con solo lectura del bucket
 ```
 
-`make gcp-run-release` encadena los últimos cuatro. Después, `make gcp-run-url`,
-`make gcp-run-logs` y `make gcp-run-delete`. En Cloud Shell no hace falta pasar
-`GCP_PROJECT` si ya corriste `gcloud config set project`, pero sí en tu computadora, salvo
-que lo dejes fijo en el `.env`.
+Y después, cada vez:
+
+```bash
+make gcp-cloudshell-score   # predicciones con el último modelo del bucket
+make gcp-run-build          # docker build de la imagen de la API + dashboard
+make gcp-run-local          # opcional: probar esa imagen en :8000 antes de subirla
+make gcp-run-push           # docker push al registry
+make gcp-run-data           # sube las predicciones al bucket que monta el servicio
+make gcp-run-deploy         # gcloud run deploy con esa imagen; imprime la URL
+```
+
+`make gcp-run-release` encadena build, push, data y deploy. Para operarlo:
+`make gcp-run-url`, `make gcp-run-logs`, `make gcp-run-revisions` y `make gcp-run-delete`.
+
+**El proyecto.** En Cloud Shell no hace falta pasar nada: se toma de
+`gcloud config set project`. En tu computadora también, si ya lo tenés configurado; si no,
+`GCP_PROJECT=mi-proyecto` al vuelo o fijo en el `.env`.
+
+**Diferencia con `make gcp-cloudshell-serve`.** Ahí el dashboard lo levanta uvicorn a mano
+dentro de Cloud Shell, solo para vos y mientras la terminal esté abierta. Acá corre en
+Cloud Run, desde una imagen versionada en el registry y con una URL que se puede compartir.
 
 La imagen se construye con `--platform linux/amd64` a propósito: Cloud Run no corre
 imágenes arm64, y en una Mac con chip M el build por defecto sale arm64. El error

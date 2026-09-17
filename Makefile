@@ -21,7 +21,12 @@ DC_RUN      := $(COMPOSE) --profile jobs run --rm pipeline
 
 # Configuracion de despliegue en GCP. Sobreescribir por linea de comando o en .env.
 # us-central1 por costo: es tier 1 de Cloud Run y entra en el free tier de Cloud Storage.
-GCP_PROJECT ?= $(or $(shell sed -n 's/^GCP_PROJECT=//p' .env 2>/dev/null | head -1),tu-proyecto-gcp)
+# El proyecto sale del .env si esta, y si no del que tenga configurado gcloud, que es el
+# caso de Cloud Shell (`gcloud config set project`). El placeholder del final hace que los
+# targets corten con un mensaje claro en vez de fallar contra un proyecto inexistente.
+# `$(or ...)` corta en el primero que no este vacio, asi que el `gcloud` solo se ejecuta
+# cuando hace falta.
+GCP_PROJECT ?= $(or $(shell sed -n 's/^GCP_PROJECT=//p' .env 2>/dev/null | head -1),$(shell gcloud config get-value project 2>/dev/null | grep -v '(unset)'),tu-proyecto-gcp)
 GCP_REGION  ?= $(or $(shell sed -n 's/^GCP_REGION=//p' .env 2>/dev/null | head -1),us-central1)
 GCP_REPO    ?= churn
 # Sin "-fudo" choca con el bucket que crea el lab de la clase 4.
@@ -245,6 +250,7 @@ clean: ## Borra caches y artefactos intermedios (no toca data/ ni models/)
 require-gcp-project:
 	@test "$(GCP_PROJECT)" != "tu-proyecto-gcp" || { \
 	  echo "GCP_PROJECT no esta configurado (se usaria el placeholder 'tu-proyecto-gcp')."; \
+	  echo "  con gcloud:  gcloud config set project mi-proyecto"; \
 	  echo "  en .env:     GCP_PROJECT=mi-proyecto"; \
 	  echo "  o al vuelo:  make <target> GCP_PROJECT=mi-proyecto"; \
 	  exit 1; }
@@ -310,7 +316,9 @@ GCP_RUN_PREFIX  ?= demo
 GCP_RUN_DATA    ?= outputs/cloudshell
 
 .PHONY: gcp-run-repo
-gcp-run-repo: require-gcp-project ## [Clase 6] Crea el repositorio de imagenes en Artifact Registry (una vez)
+gcp-run-repo: require-gcp-project ## [Clase 6] Habilita las APIs y crea el repositorio de imagenes (una vez)
+	@# Un proyecto nuevo nace con casi todo apagado. Habilitar una API es gratis.
+	gcloud services enable run.googleapis.com artifactregistry.googleapis.com --project=$(GCP_PROJECT)
 	gcloud artifacts repositories describe $(GCP_REPO) --project=$(GCP_PROJECT) --location=$(GCP_REGION) >/dev/null 2>&1 \
 	  || gcloud artifacts repositories create $(GCP_REPO) --project=$(GCP_PROJECT) --location=$(GCP_REGION) \
 	       --repository-format=docker --description="Imagenes del predictor de churn"
@@ -426,6 +434,21 @@ gcp-run-delete: ## [Clase 6] Da de baja el servicio
 
 GCP_ENV = PROJECT_ID=$(GCP_PROJECT) REGION=$(GCP_REGION) BUCKET=$(GCP_BUCKET) PROJECT_NUMBER=$$(gcloud projects describe $(GCP_PROJECT) --format='value(projectNumber)')
 CLOUDRUN = $(GCP_ENV) bash deploy/cloudrun.sh
+
+# Frenar y limpiar. Ver deploy/teardown.sh y el runbook en deploy/runbook.md.
+TEARDOWN = PROJECT_ID=$(GCP_PROJECT) BUCKET=$(GCP_BUCKET) REGION=$(GCP_REGION) bash deploy/teardown.sh
+
+.PHONY: gcp-resources
+gcp-resources: ## Lista que hay creado en GCP y que puede estar costando
+	@$(TEARDOWN) listar
+
+.PHONY: gcp-stop
+gcp-stop: ## Da de baja el dashboard publico. Los datos y los modelos quedan
+	$(TEARDOWN) frenar
+
+.PHONY: gcp-teardown
+gcp-teardown: ## Borra servicio, imagenes y cuenta de servicio. TODO=1 borra tambien el bucket
+	$(TEARDOWN) $(if $(TODO),borrar-todo,borrar)
 
 .PHONY: gcp-bootstrap
 gcp-bootstrap: ## Puesta a punto inicial de GCP (una vez): bucket, registry, permisos, WIF
