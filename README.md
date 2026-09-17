@@ -124,6 +124,12 @@ Equivalencias de los comandos que se usan a diario:
 | `make up` | `docker compose up -d api web` |
 | `make down` | `docker compose down` |
 | `make logs` | `docker compose logs -f api web` |
+| `make gcp-docker-build` | `docker build -f docker/Dockerfile.api -t REGION-docker.pkg.dev/PROYECTO/churn/api:SHA .` |
+| `make gcp-docker-push` | `docker push REGION-docker.pkg.dev/PROYECTO/churn/api:SHA` |
+| `make gcp-docker-deploy` | `bash deploy/cloudrun.sh app REGION-docker.pkg.dev/PROYECTO/churn/api:SHA` |
+| `make gcp-run-build` | `docker build --platform linux/amd64 -f docker/Dockerfile.api -t REGION-docker.pkg.dev/PROYECTO/churn/api:SHA .` |
+| `make gcp-run-push` | `docker push REGION-docker.pkg.dev/PROYECTO/churn/api:SHA` |
+| `make gcp-run-deploy` | `gcloud run deploy churn-demo --image REGION-docker.pkg.dev/PROYECTO/churn/api:SHA --allow-unauthenticated …` |
 
 Cualquier comando de la CLI va después de `pipeline`, con sus flags:
 
@@ -592,12 +598,39 @@ make gcp-grant GCP_PROJECT=tu-proyecto MEMBER=user:ana@fu.do    # dar acceso
 make gcp-url GCP_PROJECT=tu-proyecto                            # URL de la app
 ```
 
+El mismo recorrido, pero construyendo las imágenes con Docker en tu máquina en vez de
+con Cloud Build —un comando por paso, como en la clase 6— y desplegando por el mismo
+`deploy/cloudrun.sh` que usa CI:
+
+```bash
+make gcp-docker-auth                               # una vez por máquina
+make gcp-docker-release GCP_PROJECT=tu-proyecto    # build + push + deploy
+```
+
+Y una variante más corta, la de la clase 6: construir con Docker, publicar en el registry
+y desplegar en Cloud Run con una URL **pública, sin login**, sin depender del bootstrap ni
+de GitHub Actions. Un comando por paso:
+
+```bash
+make gcp-run-repo   GCP_PROJECT=tu-proyecto    # una vez: repositorio de imágenes
+make gcp-run-sa     GCP_PROJECT=tu-proyecto    # una vez: cuenta de servicio del servicio
+make gcp-run-build  GCP_PROJECT=tu-proyecto    # docker build
+make gcp-run-push   GCP_PROJECT=tu-proyecto    # docker push
+make gcp-run-data   GCP_PROJECT=tu-proyecto    # sube las predicciones al bucket
+make gcp-run-deploy GCP_PROJECT=tu-proyecto    # gcloud run deploy
+make gcp-run-delete GCP_PROJECT=tu-proyecto    # dar de baja el servicio
+```
+
+El link no pide login y muestra datos de cuentas reales: compartirlo con criterio y darlo
+de baja al terminar. Detalle de cada paso en
+[`deploy/README.md`](deploy/README.md#compartir-el-dashboard-con-un-link-público).
+
 ---
 
 ## Desarrollo
 
 ```bash
-make test     # 98 tests
+make test     # 124 tests
 make lint     # ruff
 make fmt      # formateo automático
 ```

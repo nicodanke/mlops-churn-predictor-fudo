@@ -35,6 +35,7 @@ from churn.data.seasonality import (
 from churn.logging_setup import setup_logging
 from churn.models import promotion
 from churn.models.artifact import load_model
+from churn.monitoring.drift import compute_drift
 from churn.pricing.revenue import PricingBook
 from churn.pricing.template import build_pricing_template, pricing_coverage
 from churn.scoring.batch import score_period, write_predictions
@@ -321,6 +322,43 @@ def info(model_dir: str = ModelDirOpt) -> None:
             }
         )
     )
+
+
+@app.command()
+def drift(
+    config: str | None = ConfigOpt,
+    model_dir: str = ModelDirOpt,
+    periodo: int | None = typer.Option(
+        None, help="Periodo YYYYMM a comparar. Por defecto el ultimo."
+    ),
+    top: int | None = typer.Option(None, "--top", help="Cuantas features mostrar."),
+    out: str | None = typer.Option(None, "--out", help="Guarda el reporte en un JSON."),
+    fail_on_drift: bool = typer.Option(
+        False,
+        "--fail-on-drift",
+        help="Sale con codigo 1 si alguna feature supera el umbral alto (util en CI).",
+    ),
+) -> None:
+    """Compara los datos del mes con aquellos con los que se entreno el modelo (PSI)."""
+    cfg = Config.load(config)
+    features = pipeline.prepare(cfg)
+    artifact = load_model(model_dir)
+    reporte = compute_drift(features, artifact, cfg, periodo=periodo)
+
+    console.print(f"\n[bold]Drift del periodo {reporte.periodo_actual}[/bold]")
+    console.print(reporte.render())
+
+    console.print("\n[bold]Features con mayor PSI[/bold]")
+    _print_df(reporte.tabla.head(top or int(cfg.get("monitoring.top_n", 15))))
+
+    if out:
+        destino = Path(out)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(json.dumps(reporte.to_dict(), indent=2, ensure_ascii=False))
+        console.print(f"\n  reporte -> {destino}")
+
+    if fail_on_drift and reporte.hay_drift:
+        raise typer.Exit(1)
 
 
 @app.command()

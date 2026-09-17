@@ -359,6 +359,111 @@ Qué hace:
    servicio distinto de `churn-app`, que sigue siempre detrás de IAP.
 
 Para actualizar los datos: `make gcp-cloudshell-score && make gcp-cloudshell-publish`.
+
+#### Los mismos pasos, uno por uno
+
+`publish` hace todo junto y construye con Cloud Build. Si preferís el recorrido de la
+clase 6 —construir con Docker, publicar en el registry y desplegar—, cada paso tiene su
+target y termina en el mismo servicio `churn-demo`:
+
+```bash
+make gcp-docker-auth GCP_PROJECT=mi-proyecto   # una vez por máquina: Docker puede publicar
+make gcp-run-repo    GCP_PROJECT=mi-proyecto   # una vez por proyecto: repositorio de imágenes
+make gcp-run-sa      GCP_PROJECT=mi-proyecto   # una vez por proyecto: cuenta de servicio
+
+make gcp-run-build   GCP_PROJECT=mi-proyecto   # docker build de la imagen de la API
+make gcp-run-local                             # opcional: probarla en :8000 antes de subirla
+make gcp-run-push    GCP_PROJECT=mi-proyecto   # docker push al registry
+make gcp-run-data    GCP_PROJECT=mi-proyecto   # sube las predicciones al bucket
+make gcp-run-deploy  GCP_PROJECT=mi-proyecto   # gcloud run deploy con esa imagen
+```
+
+`make gcp-run-release` encadena los últimos cuatro. Después, `make gcp-run-url`,
+`make gcp-run-logs` y `make gcp-run-delete`. En Cloud Shell no hace falta pasar
+`GCP_PROJECT` si ya corriste `gcloud config set project`, pero sí en tu computadora, salvo
+que lo dejes fijo en el `.env`.
+
+La imagen se construye con `--platform linux/amd64` a propósito: Cloud Run no corre
+imágenes arm64, y en una Mac con chip M el build por defecto sale arm64. El error
+aparecería recién al arrancar el servicio, no al construir.
+
+#### Logs y rollback
+
+**Logs.** Cada deploy y cada request quedan en Cloud Logging:
+
+```bash
+make gcp-run-logs          # últimos 50 renglones del servicio, como los escribe
+make gcp-run-logs-api      # tabla de requests: método, ruta, estado, latencia y revisión
+make gcp-run-logs-errors   # solo severidad ERROR o mayor
+```
+
+La API emite **una línea JSON por request**, así que Cloud Logging la parsea a campos
+(`jsonPayload`) y se puede consultar por cualquiera de ellos, no solo buscar texto:
+
+```bash
+gcloud logging read 'jsonPayload.event="request" AND jsonPayload.latency_ms>500' --limit=10
+gcloud logging read 'jsonPayload.event="request" AND jsonPayload.status>=500' --limit=10
+```
+
+Los campos son `event`, `method`, `path`, `status`, `latency_ms`, `revision` y los
+parámetros del pedido (`query_periodo`, `query_risk`, `query_page`, `query_size`). `path`
+es la ruta del endpoint, no la concreta: se registra
+`/api/v1/accounts/{account_id}` y nunca el id de la cuenta, así que en los logs no quedan
+datos de clientes. El email de la sesión de IAP tampoco se loguea.
+
+En local los logs siguen en texto legible: el JSON se activa solo dentro de Cloud Run.
+Para forzar uno u otro, `CHURN_API_LOG_FORMAT=json` o `=text`. Detalle en
+[`api/app/observability.py`](../api/app/observability.py).
+
+**Rollback del servicio.** Cada `make gcp-run-deploy` crea una revisión nueva, y volver a
+la anterior es solo mover el tráfico, sin reconstruir ni volver a desplegar:
+
+```bash
+make gcp-run-revisions                              # lista las revisiones
+make gcp-run-rollback REVISION=churn-demo-00002-abc # 100% del tráfico a esa revisión
+```
+
+**Volver a un modelo anterior.** Los modelos quedan versionados en el bucket, así que no
+hay que reentrenar:
+
+```bash
+make gcp-cloudshell-models                       # lista los modelos, por fecha y hora
+make gcp-cloudshell-score RUN_ID=20260913-192551 # predicciones con el modelo viejo
+make gcp-run-data && make gcp-run-deploy         # publicarlas (o make gcp-cloudshell-publish)
+```
+
+En el camino automático (Cloud Run Jobs + GitHub Actions) el rollback del modelo en
+producción es otro: `make gcp-registry` y `make gcp-release TAG=<sha> FORCE=1`, que
+restaura desde `models/releases/`. Ver [Operación](#operación).
+
+#### Drift: ¿el mundo sigue siendo el mismo?
+
+El modelo se entrenó una vez y scorea meses que nunca vio. Si la distribución de los datos
+se corre, las probabilidades dejan de ser confiables aunque el pipeline no falle. Se mide
+con **PSI** comparando el mes que se scorea contra los meses de entrenamiento:
+
+```bash
+make drift                      # en local
+make gcp-cloudshell-drift       # en Cloud Shell, con el último modelo del bucket
+```
+
+Cómo leerlo, que es la convención que usa el reporte:
+
+| PSI | Qué significa |
+|---|---|
+| menor a 0.10 | sin cambios relevantes |
+| 0.10 a 0.25 | cambio moderado: mirarlo |
+| 0.25 o más | el modelo está viendo otro mundo: conviene reentrenar |
+
+El comando imprime las features ordenadas por PSI y avisa si alguna cruzó el umbral alto.
+Opciones útiles: `--periodo 202602` para comparar un mes puntual, `--out drift.json` para
+guardar el reporte y `--fail-on-drift`, que sale con código 1 si hay drift alto, pensado
+para encadenarlo en CI o en el job mensual.
+
+Dos detalles de la implementación ([`src/churn/monitoring/drift.py`](../src/churn/monitoring/drift.py)):
+los faltantes cuentan como un tramo más, así que una columna que el data warehouse deja de
+mandar aparece en el reporte en vez de pasar desapercibida; y la referencia son los meses
+de entrenamiento, no el mes anterior, porque es contra esos datos que el modelo aprendió.
 Escala a cero, así que sin visitas no cuesta nada.
 
 Si el deploy falla con un error de *organization policy* sobre `allUsers`, el proyecto

@@ -1,0 +1,21 @@
+# Lo que no entra en el contexto de `docker build`. Sin este archivo, Docker le manda al
+# daemon el repo entero: data/ son ~170 MB de cuentas reales y .venv otro tanto, asi que
+# cada build tardaba de mas y metia en la imagen datos que no tiene que ver.
+# Las imagenes solo necesitan pyproject.toml, poetry.lock, README.md, src/, config/,
+# api/, web/ y docker/.
+.git
+.github/
+.venv/
+data/
+outputs/
+models/
+notebooks/
+docs/
+tests/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+.env
+# Tiene los precios reales; la imagen no los usa (el revenue lo calcula el scoring).
+config/pricing.yaml

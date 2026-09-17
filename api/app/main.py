@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from app.observability import RequestLogMiddleware, setup_logging
 from app.schemas import (
     AccountDetail,
     AccountPrediction,
@@ -38,7 +39,7 @@ from app.schemas import (
 from app.settings import settings
 from app.store import PredictionStore, query_accounts
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+setup_logging(settings.log_format)
 logger = logging.getLogger(__name__)
 
 store = PredictionStore(settings.predictions_dir)
@@ -68,6 +69,10 @@ app = FastAPI(
         "riesgo economico y las features que explican cada prediccion."
     ),
 )
+
+# Una linea de log por request, con latencia y estado. Va primero para que mida tambien
+# lo que tarde el resto de los middlewares.
+app.add_middleware(RequestLogMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

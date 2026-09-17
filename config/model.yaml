@@ -131,6 +131,20 @@ promotion:
   max_regression:
     roc_auc: 0.01
 
+monitoring:
+  # Drift: cuanto se corrieron los datos del mes que se scorea respecto de los meses con
+  # los que se entreno el modelo. Se mide con PSI (ver src/churn/monitoring/drift.py) y se
+  # consulta con `churn drift`.
+  psi_bins: 10
+  # Los cortes de siempre para leer un PSI: por debajo de 0.10 no pasa nada, entre 0.10 y
+  # 0.25 conviene mirarlo, y de 0.25 para arriba el modelo esta viendo otro mundo.
+  umbral_moderado: 0.10
+  umbral_alto: 0.25
+  # Cuantas features se muestran en el reporte, ordenadas por PSI.
+  top_n: 15
+  # Familias de features a dejar afuera del reporte (match por substring).
+  exclude_patterns: []
+
 risk:
   # Umbral de probabilidad por debajo del cual la cuenta se clasifica "no_churn".
   # Se puede fijar a mano o dejar en null para calibrarlo automaticamente sobre

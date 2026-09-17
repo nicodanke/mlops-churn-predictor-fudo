@@ -12,6 +12,7 @@
 #                      gs://BUCKET/models/cloudshell/RUN_ID (por defecto, fecha y hora UTC)
 #    models            lista los modelos entrenados desde Cloud Shell
 #    score [RUN_ID]    predicciones del ultimo mes con ese modelo (por defecto, el ultimo)
+#    drift [RUN_ID]    cuanto se corrieron los datos desde que se entreno ese modelo
 #    serve [PUERTO]    API + dashboard en PUERTO (8080), para la Vista previa en la Web.
 #                      Solo lo ve la cuenta duena de la sesion de Cloud Shell
 #    publish           publica API + dashboard en Cloud Run con una URL PUBLICA, sin login,
@@ -210,18 +211,25 @@ cmd_train() {
   echo "  Scorear:   make gcp-cloudshell-score RUN_ID=${run_id}"
 }
 
-cmd_score() {
+# Modelo a usar: el RUN_ID que pidan o, si no dicen nada, el ultimo del bucket. Los RUN_ID
+# por defecto son fecha y hora, asi que el ultimo por nombre es el mas nuevo.
+modelo_elegido() {
   local model_dir
   if [[ -n "${1:-}" ]]; then
     model_dir="${MODELS}/$1"
   else
-    # Los RUN_ID por defecto son fecha y hora, asi que el ultimo por nombre es el mas nuevo.
     model_dir=$(gcloud storage ls "${MODELS}/" 2>/dev/null | sort | tail -1 | sed 's:/$::')
   fi
   if [[ -z "$model_dir" ]] || ! gcloud storage ls "${model_dir}/metadata.json" >/dev/null 2>&1; then
     echo "No hay un modelo en ${model_dir:-${MODELS}/}. Entrenar con: make gcp-cloudshell-train" >&2
-    exit 1
+    return 1
   fi
+  echo "$model_dir"
+}
+
+cmd_score() {
+  local model_dir
+  model_dir=$(modelo_elegido "${1:-}") || exit 1
 
   requiere_entorno
   bajar_snapshots
@@ -255,6 +263,18 @@ cmd_score() {
   echo ""
   echo "  Predicciones en ${PREDICTIONS}"
   echo "  Dashboard:     make gcp-cloudshell-serve"
+}
+
+cmd_drift() {
+  local model_dir
+  model_dir=$(modelo_elegido "${1:-}") || exit 1
+
+  requiere_entorno
+  bajar_snapshots
+
+  paso "Drift del ultimo mes contra los datos con los que se entreno ${model_dir}"
+  GOOGLE_CLOUD_PROJECT="$PROJECT_ID" CHURN_CONFIG=config/cloudshell.yaml \
+    .venv/bin/churn drift --model-dir "$model_dir"
 }
 
 cmd_serve() {
@@ -405,6 +425,7 @@ case "${1:-}" in
   train) shift; cmd_train "$@" ;;
   models) gcloud storage ls "${MODELS}/" ;;
   score) shift; cmd_score "$@" ;;
+  drift) shift; cmd_drift "$@" ;;
   serve) shift; cmd_serve "$@" ;;
   publish) cmd_publish ;;
   url) gc run services describe "$DEMO_SERVICE" --region="$REGION" --format='value(status.url)' ;;

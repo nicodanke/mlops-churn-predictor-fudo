@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     # Tamano maximo de pagina en el listado de cuentas.
     max_page_size: int = 200
+    # Formato de los logs: "auto" | "json" | "text". Con "auto" se emite JSON dentro de
+    # Cloud Run (donde Cloud Logging lo parsea a campos consultables) y texto legible en
+    # local. Ver app/observability.py.
+    log_format: str = "auto"
 
     @property
     def cors_origin_list(self) -> list[str]:
