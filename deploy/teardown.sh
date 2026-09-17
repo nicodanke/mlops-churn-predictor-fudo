@@ -126,6 +126,7 @@ cmd_frenar() {
 }
 
 cmd_borrar() {
+  local error
   confirmar "Se borran el servicio, las imagenes, el repositorio y la cuenta de servicio. Seguir?"
   CONFIRMAR=si cmd_frenar
 
@@ -137,10 +138,15 @@ cmd_borrar() {
   fi
 
   paso "Cuenta de servicio ${SA}"
-  if gc iam service-accounts describe "$SA" >/dev/null 2>&1; then
-    gc iam service-accounts delete "$SA" --quiet
-  else
+  # Que falte permiso para borrarla no puede cortar el teardown: una cuenta de servicio sin
+  # uso no cuesta nada, y lo que falta borrar despues de este paso si cuesta.
+  if ! gc iam service-accounts describe "$SA" >/dev/null 2>&1; then
     echo "  no existe"
+  elif ! error=$(gc iam service-accounts delete "$SA" --quiet 2>&1); then
+    echo "  no se pudo borrar:"
+    head -1 <<<"$error" | cut -c1-160 | sed 's/^/    /'
+    echo "    Sin uso no cuesta nada, asi que se puede dejar. Para borrarla hace falta el rol"
+    echo "    roles/iam.serviceAccountAdmin (u Owner) sobre el proyecto; despues: make gcp-teardown"
   fi
 
   paso "Predicciones publicadas (gs://${BUCKET}/demo/)"
