@@ -1,0 +1,23 @@
+# ============================================================================
+#  Configuracion del pipeline cuando se entrena y scorea desde Cloud Shell.
+#
+#  Hereda todo de model.yaml y solo cambia rutas. El destino del modelo no va aca porque
+#  depende del bucket de cada proyecto: se le pasa a `churn train` con --model-dir o
+#  CHURN_MODEL_DIR (gs://BUCKET/models/cloudshell/...).
+# ============================================================================
+extends: model.yaml
+
+data:
+  # Copia local exacta de gs://BUCKET/raw/ que mantiene deploy/cloudshell.sh. Va en un
+  # directorio aparte para que, corriendo en una computadora, no se lean tambien los CSV
+  # propios de data/. El loader levanta tanto .csv como .csv.gz.
+  raw_path: "data/bucket/"
+  # Cache propio: si compartiera el de `make train`, podria reusar features armadas con
+  # otros datos.
+  interim_path: "outputs/cloudshell/panel.parquet"
+  features_path: "outputs/cloudshell/features.parquet"
+
+scoring:
+  # Lo que sirve `make gcp-cloudshell-serve`. Aparte de outputs/predictions por lo mismo
+  # que el cache: no mezclarse con las predicciones de `make score`.
+  output_dir: "outputs/cloudshell/predictions"

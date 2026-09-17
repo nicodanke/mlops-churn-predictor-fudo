@@ -3,6 +3,12 @@
 Deliberadamente es solo lectura: el modelo corre en un job batch mensual aparte y esta
 capa se limita a exponer lo que quedo escrito. Eso la hace liviana (arranca en menos de
 un segundo, no carga XGBoost) y barata de hostear en Cloud Run escalando a cero.
+
+La autenticacion no vive aca: en Cloud Run el servicio esta detras de Identity-Aware
+Proxy, que exige iniciar sesion con Google y estar en la lista de acceso antes de que el
+request llegue al contenedor. Por eso esta misma app sirve tambien el dashboard: la
+sesion de IAP es una cookie del dominio del servicio, y un front en otro dominio no
+podria mandarla.
 """
 
 from __future__ import annotations
@@ -15,8 +21,10 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 
 from app.schemas import (
     AccountDetail,
@@ -71,6 +79,9 @@ app.add_middleware(
 
 API = "/api/v1"
 
+# Header que agrega IAP con la cuenta autenticada, como "accounts.google.com:ana@fu.do".
+IAP_USER_HEADER = "x-goog-authenticated-user-email"
+
 
 def get_batch(
     periodo: int | None = Query(None, description="Periodo YYYYMM. Por defecto el ultimo."),
@@ -94,6 +105,18 @@ def health() -> HealthResponse:
         periodos_disponibles=periods,
         model_loaded=model_ok,
     )
+
+
+@app.get(f"{API}/me", tags=["meta"])
+def me(request: Request) -> dict[str, Any]:
+    """Cuenta con la que se inicio sesion en el dashboard.
+
+    Es informativo: el control de acceso lo hace IAP antes de que el request llegue aca,
+    no este endpoint. En local no hay IAP y devuelve `authenticated: false`.
+    """
+    raw = request.headers.get(IAP_USER_HEADER, "")
+    email = raw.split(":", 1)[-1] if raw else None
+    return {"authenticated": bool(email), "email": email}
 
 
 @app.get(f"{API}/periodos", response_model=list[int], tags=["meta"])
@@ -228,3 +251,22 @@ def _clean(record: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+# ----------------------------------------------------------------- dashboard ---
+# Va al final: las rutas de la API, definidas arriba, tienen prioridad sobre los
+# archivos estaticos montados en "/".
+WEB_DIR = Path(settings.web_dir)
+
+if (WEB_DIR / "index.html").exists():
+
+    @app.get("/config.js", include_in_schema=False)
+    def dashboard_config() -> Response:
+        """El dashboard le habla a la API que lo sirvio: mismo origen, sin CORS."""
+        return Response(
+            "window.CHURN_API_URL = window.location.origin;\n",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="dashboard")

@@ -1,19 +1,22 @@
-# Construye y publica las tres imagenes en Artifact Registry.
+# Construye y publica las tres imagenes en Artifact Registry con Cloud Build.
 #
-#   gcloud builds submit --config=deploy/cloudbuild.yaml \
-#     --substitutions=_REGION=southamerica-east1,_REPO=churn,_TAG=latest .
+# Es la alternativa manual: el camino normal es GitHub Actions, que construye con cache
+# de capas y despliega solo (.github/workflows/deploy.yml).
 #
-# Requiere que exista el repositorio:
-#   gcloud artifacts repositories create churn --repository-format=docker --location=$_REGION
+#   make gcp-build GCP_PROJECT=mi-proyecto
+#
+# Requiere haber corrido deploy/bootstrap.sh (crea el repositorio `churn`).
 
 substitutions:
-  _REGION: southamerica-east1
+  _REGION: us-central1
   _REPO: churn
   _TAG: latest
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: E2_HIGHCPU_8
+  # Sin machineType: la maquina por defecto es la que entra en los minutos gratis
+  # mensuales de Cloud Build. Una E2_HIGHCPU_8 es mas rapida pero se paga desde el
+  # primer minuto.
 
 steps:
   - id: build-pipeline

@@ -2,7 +2,10 @@
  *
  * Consume la API de solo lectura que sirve los resultados del scoring batch.
  * La URL de la API se resuelve, en orden: ?api= en la query string, la variable
- * window.CHURN_API_URL (que inyecta el contenedor via config.js), o localhost:8000.
+ * window.CHURN_API_URL (que inyecta config.js), o localhost:8000.
+ *
+ * En Cloud Run el dashboard lo sirve la propia API, detras de Identity-Aware Proxy:
+ * config.js apunta al mismo origen y la sesion de Google viaja sola en cada fetch.
  */
 
 const API = (() => {
@@ -46,7 +49,14 @@ async function api(path, params = {}) {
     if (Array.isArray(value)) value.forEach((v) => url.searchParams.append(key, v));
     else url.searchParams.set(key, value);
   }
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    // Detras de IAP una sesion vencida no devuelve 401: redirige al login de Google, y
+    // el navegador corta ese redirect dentro de un fetch. Recargar vuelve a pedir login.
+    throw new Error(`${error.message}. Si la sesión venció, recargá la página.`);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.detail || `${response.status} ${response.statusText}`);
@@ -80,7 +90,20 @@ function showBanner(message, kind = "warn") {
 
 /* ------------------------------------------------------------------ carga */
 
+/** Muestra con qué cuenta se entró. Solo hay sesión detrás de IAP (Cloud Run). */
+async function loadSession() {
+  try {
+    const me = await api("/api/v1/me");
+    if (!me.authenticated) return;
+    $("session-email").textContent = me.email;
+    $("session").classList.remove("hidden");
+  } catch {
+    // Sin sesión que mostrar: el resto del dashboard funciona igual.
+  }
+}
+
 async function boot() {
+  loadSession();
   try {
     const periodos = await api("/api/v1/periodos");
     if (!periodos.length) {

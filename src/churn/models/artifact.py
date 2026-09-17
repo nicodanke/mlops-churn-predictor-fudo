@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 from dataclasses import dataclass, field
@@ -81,32 +82,73 @@ class ModelArtifact:
         }
 
 
-def save_model(artifact: ModelArtifact, model_dir: str | Path = DEFAULT_MODEL_DIR) -> Path:
-    """Guarda el artefacto y un metadata.json legible al lado."""
-    out_dir = Path(model_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def save_model(artifact: ModelArtifact, model_dir: str | Path = DEFAULT_MODEL_DIR) -> str:
+    """Guarda el artefacto y un metadata.json legible al lado.
+
+    `model_dir` puede ser un directorio local o un bucket (`gs://bucket/models/...`), que
+    es donde queda el modelo cuando se entrena desde Cloud Shell (ver deploy/cloudshell.sh).
+    """
+    out_dir = _join(model_dir)
+    if not _is_remote(out_dir):
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
 
     artifact.trained_at = artifact.trained_at or datetime.now(UTC).isoformat(timespec="seconds")
 
-    model_path = out_dir / MODEL_FILENAME
-    joblib.dump(artifact, model_path, compress=3)
+    # Se serializa en memoria para escribir igual en disco que en el bucket. El artefacto
+    # pesa unos pocos MB.
+    buffer = io.BytesIO()
+    joblib.dump(artifact, buffer, compress=3)
+    model_path = _join(out_dir, MODEL_FILENAME)
+    with _open(model_path, "wb") as fh:
+        fh.write(buffer.getbuffer())
 
-    with open(out_dir / METADATA_FILENAME, "w") as fh:
+    # metadata.json va despues del modelo: nunca describe un modelo que no termino de subir.
+    with _open(_join(out_dir, METADATA_FILENAME), "w") as fh:
         json.dump(artifact.to_metadata(), fh, indent=2, ensure_ascii=False)
 
-    size_mb = model_path.stat().st_size / 1e6
-    logger.info("Modelo guardado en %s (%.1f MB)", model_path, size_mb)
+    logger.info("Modelo guardado en %s (%.1f MB)", model_path, buffer.tell() / 1e6)
     return model_path
 
 
 def load_model(model_dir: str | Path = DEFAULT_MODEL_DIR) -> ModelArtifact:
-    path = Path(model_dir) / MODEL_FILENAME
-    if not path.exists():
+    path = _join(model_dir, MODEL_FILENAME)
+    if not _exists(path):
         raise FileNotFoundError(f"No hay modelo entrenado en {path}. Corre `make train` primero.")
-    artifact: ModelArtifact = joblib.load(path)
+    with _open(path, "rb") as fh:
+        artifact: ModelArtifact = joblib.load(io.BytesIO(fh.read()))
     logger.info(
         "Modelo cargado (entrenado %s, %s features)",
         artifact.trained_at,
         len(artifact.feature_names),
     )
     return artifact
+
+
+def _is_remote(path: str | Path) -> bool:
+    return "://" in str(path)
+
+
+def _join(base: str | Path, *parts: str) -> str:
+    """Une rutas sin romper el `gs://` del bucket (Path lo colapsa a `gs:/`)."""
+    if _is_remote(base):
+        return "/".join([str(base).rstrip("/"), *parts])
+    return str(Path(base, *parts))
+
+
+def _open(path: str, mode: str) -> Any:
+    """Abre un archivo local o de un bucket. Los buckets necesitan el extra `gcp` (gcsfs)."""
+    kwargs = {} if "b" in mode else {"encoding": "utf-8"}
+    if not _is_remote(path):
+        return open(path, mode, **kwargs)
+    import fsspec
+
+    return fsspec.open(path, mode, **kwargs)
+
+
+def _exists(path: str) -> bool:
+    if not _is_remote(path):
+        return Path(path).exists()
+    import fsspec
+
+    fs, ruta = fsspec.core.url_to_fs(path)
+    return fs.exists(ruta)

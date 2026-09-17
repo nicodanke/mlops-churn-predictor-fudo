@@ -1,0 +1,26 @@
+# ============================================================================
+#  Configuracion del pipeline cuando corre como Cloud Run Job.
+#
+#  Hereda todo de model.yaml y pisa solo las rutas. Los parametros del modelo NO se
+#  repiten aca a proposito: un cambio en model.yaml tiene que llegar tal cual al
+#  entrenamiento en la nube, que es justamente lo que dispara el reentrenamiento en CI.
+#
+#  El bucket se monta con Cloud Storage FUSE en /mnt/gcs (ver deploy/cloudrun.sh), asi
+#  que para el codigo son directorios comunes: no hace falta gcsfs ni rutas gs://.
+# ============================================================================
+
+extends: model.yaml
+
+data:
+  # Todos los snapshots que haya en gs://BUCKET/raw/ (.csv, .csv.gz o .parquet).
+  raw_path: "/mnt/gcs/raw/"
+  # El cache de features vive en el disco efimero del contenedor, no en el bucket: cada
+  # ejecucion lo recalcula con el codigo de su propia imagen. Si se compartiera, el job
+  # de scoring (fijado a la imagen del campeon) podria leer features armadas por un
+  # candidato con otro feature engineering. En Cloud Run ese disco es memoria: por eso
+  # los jobs corren con 8 GiB y no con los 4 que alcanzan en local.
+  interim_path: "/tmp/churn/interim/panel.parquet"
+  features_path: "/tmp/churn/interim/features.parquet"
+
+scoring:
+  output_dir: "/mnt/gcs/predictions"

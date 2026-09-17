@@ -1,6 +1,7 @@
-# Imagen de la API de lectura.
+# Imagen de la API de lectura, que ademas sirve el dashboard.
 # No incluye XGBoost ni SHAP: la API solo lee los parquet que dejo el batch, asi que
 # la imagen queda chica y arranca rapido (importa para el escalado a cero de Cloud Run).
+# En Cloud Run es el unico servicio publicado, detras de Identity-Aware Proxy.
 
 FROM python:3.12-slim
 
@@ -19,9 +20,12 @@ RUN pip install \
       "pyarrow>=16.0,<22.0"
 
 COPY api/app ./app
+# El dashboard viaja en la misma imagen: con IAP tiene que compartir origen con la API.
+COPY web ./web
 
 ENV CHURN_API_PREDICTIONS_DIR=/app/outputs/predictions \
     CHURN_API_MODEL_DIR=/app/models \
+    CHURN_API_WEB_DIR=/app/web \
     PORT=8000
 
 EXPOSE 8000

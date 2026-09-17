@@ -1,0 +1,204 @@
+# ============================================================================
+#  Despliegue continuo a GCP.
+#
+#  Cada pieza se despliega solo si cambio lo suyo:
+#
+#    src/, config/, pyproject, lock   reentrena un candidato, lo compara contra el
+#                                     campeon y, si gana, lo promueve y regenera las
+#                                     predicciones
+#    api/, web/                       nueva revision de la app (API + dashboard), que
+#                                     queda detras de Identity-Aware Proxy
+#
+#  Ademas corre solo el dia 6 de cada mes para reentrenar con el snapshot nuevo que se
+#  haya subido al bucket, y se puede disparar a mano desde la pestana Actions.
+#
+#  Requiere haber corrido una vez deploy/bootstrap.sh y cargado sus variables en
+#  Settings > Secrets and variables > Actions > Variables. Ver deploy/README.md.
+# ============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 12:00 UTC = 09:00 en Buenos Aires. Despues del scoring mensual del dia 5.
+    - cron: "0 12 6 * *"
+  workflow_dispatch:
+    inputs:
+      retrain:
+        description: Reentrenar y desafiar al campeon aunque no haya cambios en el modelo
+        type: boolean
+        default: false
+      force_promote:
+        description: Promover aunque no mejore al campeon (el umbral de negocio se exige igual)
+        type: boolean
+        default: false
+      deploy_app:
+        description: Desplegar la app (API + dashboard) aunque no haya cambiado
+        type: boolean
+        default: false
+
+# Nunca dos despliegues en paralelo: dos promociones simultaneas podrian pisarse el campeon.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # para Workload Identity Federation
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+  REGION: ${{ vars.GCP_REGION }}
+  BUCKET: ${{ vars.GCP_BUCKET }}
+  REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/churn
+
+jobs:
+  changes:
+    name: Que cambio
+    runs-on: ubuntu-latest
+    outputs:
+      model: ${{ steps.plan.outputs.model }}
+      app: ${{ steps.plan.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            model:
+              - 'src/**'
+              - 'config/model.yaml'
+              - 'config/gcp.yaml'
+              - 'pyproject.toml'
+              - 'poetry.lock'
+              - 'docker/Dockerfile.pipeline'
+            app:
+              - 'api/**'
+              - 'web/**'
+              - 'docker/Dockerfile.api'
+
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          MODEL: ${{ steps.filter.outputs.model }}
+          APP: ${{ steps.filter.outputs.app }}
+          RETRAIN: ${{ inputs.retrain }}
+          DEPLOY_APP: ${{ inputs.deploy_app }}
+        run: |
+          model=$MODEL; app=$APP
+          if [[ "$EVENT" == "schedule" || "$RETRAIN" == "true" ]]; then model=true; fi
+          if [[ "$DEPLOY_APP" == "true" ]]; then app=true; fi
+          {
+            echo "model=$model"
+            echo "app=$app"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Plan de despliegue"
+            echo "| Pieza | Se despliega |"
+            echo "|---|---|"
+            echo "| Modelo (reentrenar + champion/challenger) | $model |"
+            echo "| App: API + dashboard, detras de IAP | $app |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # ------------------------------------------------------------------ modelo --
+
+  pipeline-image:
+    name: Imagen del pipeline
+    needs: [changes, quality]
+    if: needs.changes.outputs.model == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-image
+        with:
+          name: pipeline
+          dockerfile: docker/Dockerfile.pipeline
+          registry: ${{ env.REGISTRY }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+  train:
+    name: Entrenar y desafiar al campeon
+    needs: [changes, pipeline-image]
+    if: needs.changes.outputs.model == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    outputs:
+      promote: ${{ steps.decision.outputs.promote }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Actualizar el job de entrenamiento con la imagen de este commit
+        run: bash deploy/cloudrun.sh train-job "$REGISTRY/pipeline:$GITHUB_SHA"
+
+      # El entrenamiento corre en Cloud Run, al lado de los datos: el snapshot tiene
+      # informacion de cuentas reales y nunca pasa por el runner de GitHub.
+      - name: Entrenar el candidato y compararlo con el campeon
+        run: bash deploy/cloudrun.sh retrain "$GITHUB_SHA" ${{ inputs.force_promote && '--force-promote' || '' }}
+
+      - name: Leer la decision
+        id: decision
+        run: |
+          bash deploy/cloudrun.sh decision "$GITHUB_SHA" > decision.json
+          bash deploy/cloudrun.sh decision "$GITHUB_SHA" md >> "$GITHUB_STEP_SUMMARY"
+          echo "promote=$(jq -r .promote decision.json)" >> "$GITHUB_OUTPUT"
+
+  promote:
+    name: Promover a produccion
+    needs: train
+    if: needs.train.outputs.promote == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Para exigir una aprobacion humana antes de promover, agregar "Required reviewers"
+    # al environment en Settings > Environments > production.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Publicar el campeon y regenerar las predicciones
+        run: bash deploy/cloudrun.sh release "$GITHUB_SHA"
+
+      - name: Registrar la version en Vertex AI Model Registry
+        if: vars.VERTEX_MODEL_REGISTRY == 'true'
+        continue-on-error: true
+        run: bash deploy/cloudrun.sh vertex-register "$GITHUB_SHA"
+
+  # ------------------------------------------------------------------- app ---
+
+  app:
+    name: App (API + dashboard)
+    needs: [changes, quality]
+    if: needs.changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-image
+        id: image
+        with:
+          name: api
+          dockerfile: docker/Dockerfile.api
+          registry: ${{ env.REGISTRY }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - name: Desplegar en Cloud Run detras de IAP
+        run: bash deploy/cloudrun.sh app "${{ steps.image.outputs.image }}"

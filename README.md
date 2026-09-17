@@ -527,7 +527,8 @@ de un segundo) y barata de hostear escalando a cero.
 ├── api/app/                    API FastAPI de solo lectura
 ├── web/                        dashboard (HTML/CSS/JS, sin dependencias externas)
 ├── docker/                     Dockerfiles de las tres piezas
-├── deploy/                     Cloud Build, config para GCP y guía de despliegue
+├── deploy/                     puesta a punto de GCP, despliegue en Cloud Run y guía
+├── .github/workflows/          CI y despliegue continuo con champion / challenger
 ├── notebooks/                  EDA que respalda las decisiones de diseño
 ├── tests/
 └── Makefile
@@ -540,6 +541,7 @@ de un segundo) y barata de hostear escalando a cero.
 | Endpoint | Qué devuelve |
 |---|---|
 | `GET /health` | estado y períodos disponibles |
+| `GET /api/v1/me` | cuenta con la que se inició sesión (solo en GCP, detrás de IAP) |
 | `GET /api/v1/periodos` | períodos con predicciones generadas |
 | `GET /api/v1/model` | metadatos y métricas offline del modelo |
 | `GET /api/v1/summary` | cuentas y revenue en riesgo por categoría |
@@ -554,25 +556,40 @@ Documentación interactiva en `/docs`.
 
 ## Despliegue en GCP
 
-Tres piezas, cada una en la superficie que le corresponde:
+El despliegue es automático: cada push a `main` despliega solo la pieza que cambió.
 
 | Pieza | Servicio | Por qué |
 |---|---|---|
-| Pipeline batch | **Cloud Run Job** + Cloud Scheduler | corre una vez al mes y se apaga |
-| API | **Cloud Run Service** | escala a cero entre consultas |
-| Dashboard | **Cloud Run Service** (nginx) | estático |
-| Datos y artefactos | **Cloud Storage** | el job escribe, la API lee |
+| Entrenamiento + champion / challenger | **Cloud Run Job** | corre unos minutos y se apaga |
+| Scoring mensual | **Cloud Run Job** + Cloud Scheduler | fijado a la imagen del modelo campeón |
+| API + dashboard | **Cloud Run Service** + Identity-Aware Proxy | solo usuarios autorizados; escala a cero |
+| Datos, modelos y predicciones | **Cloud Storage** | montado como disco en los contenedores |
+| CI/CD | **GitHub Actions** | sin claves: Workload Identity Federation |
 
-El código no distingue local de nube: `pandas` y `pyarrow` leen `gs://` de forma nativa,
-así que lo único que cambia son las rutas del YAML de configuración.
+**La app no es pública.** Dashboard, API y `/docs` están detrás de Identity-Aware Proxy:
+hay que iniciar sesión con una cuenta de Google que esté en la lista de acceso, que se
+administra con `make gcp-grant` / `make gcp-revoke` (personas, grupos o un dominio entero).
+La API sirve también el dashboard, para que compartan el origen y la sesión.
 
-Guía completa: [`deploy/README.md`](deploy/README.md).
+Si el push cambia el modelo (`src/`, `config/model.yaml`, dependencias), CI lo reentrena
+en Cloud Run y lo compara contra el modelo en producción **sobre el mismo test**. Solo si
+supera el umbral de negocio y le gana por un margen mínimo se promueve y se regeneran las
+predicciones; si no, queda guardado como candidato. El mismo gate corre localmente:
 
 ```bash
-make gcp-build GCP_PROJECT=tu-proyecto
-make gcp-deploy-job GCP_PROJECT=tu-proyecto
-make gcp-deploy-api GCP_PROJECT=tu-proyecto
-make gcp-deploy-web GCP_PROJECT=tu-proyecto
+churn retrain --candidate-dir models/candidates/prueba --champion-dir models --use-cache
+```
+
+El código no distingue local de nube: en Cloud Run el bucket se monta como un directorio,
+y [`config/gcp.yaml`](config/gcp.yaml) hereda todo de `model.yaml` y solo cambia las rutas.
+Costo estimado: menos de USD 1 por mes.
+
+Guía completa, con la puesta a punto y la operación: [`deploy/README.md`](deploy/README.md).
+
+```bash
+make gcp-bootstrap GCP_PROJECT=tu-proyecto                      # una vez
+make gcp-grant GCP_PROJECT=tu-proyecto MEMBER=user:ana@fu.do    # dar acceso
+make gcp-url GCP_PROJECT=tu-proyecto                            # URL de la app
 ```
 
 ---
@@ -580,7 +597,7 @@ make gcp-deploy-web GCP_PROJECT=tu-proyecto
 ## Desarrollo
 
 ```bash
-make test     # 50 tests
+make test     # 98 tests
 make lint     # ruff
 make fmt      # formateo automático
 ```

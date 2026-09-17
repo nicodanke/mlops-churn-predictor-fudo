@@ -1,0 +1,16 @@
+# Lo que `gcloud builds submit` no sube a Cloud Build. Sin este archivo gcloud usaria el
+# .gitignore, pero conviene que sea explicito: data/ y outputs/ tienen datos de cuentas
+# reales y no pueden terminar en el bucket de fuentes de Cloud Build. Las imagenes solo
+# necesitan pyproject.toml, poetry.lock, README.md, src/, config/, api/, web/ y docker/.
+.gcloudignore
+.git
+.github/
+.venv/
+data/
+outputs/
+models/
+notebooks/
+docs/
+tests/
+
+#!include:.gitignore

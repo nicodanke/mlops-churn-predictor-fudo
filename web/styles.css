@@ -92,6 +92,11 @@ p { margin: 0; }
 
 .topbar-right { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
 
+.session { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-soft); }
+.session.hidden { display: none; }
+.session a { color: var(--brand); font-weight: 600; text-decoration: none; }
+.session a:hover { text-decoration: underline; }
+
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field span { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); }
 
