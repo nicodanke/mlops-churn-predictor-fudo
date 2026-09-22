@@ -30,6 +30,7 @@ La version causal de esta señal es `pausas_previas`, que solo mira hacia atras.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -213,6 +214,13 @@ def monthly_profile(panel: pd.DataFrame, min_future_months: int = 3) -> pd.DataF
 
     El indice compara contra lo que se esperaria si el fenomeno fuera uniforme a lo
     largo del año: 1,00 es "lo normal", 1,30 es "30% mas de lo esperable en ese mes".
+
+    "Uniforme" no puede significar "un doceavo en cada mes", porque el panel casi nunca
+    cubre una cantidad entera de años: con 20 meses (202501-202608), febrero a junio
+    entran dos veces en la ventana observable y septiembre a diciembre una sola. Medido
+    contra un doceavo, esos meses salen con indice 1,5 sin que pase nada en el negocio —
+    el grafico termina dibujando la forma del panel. Por eso cada evento declara en que
+    meses *pudo* observarse y el indice se calcula por oportunidad.
     """
     calendario = _calendario(panel)
     max_t = int(panel["t"].max())
@@ -234,12 +242,22 @@ def monthly_profile(panel: pd.DataFrame, min_future_months: int = 3) -> pd.DataF
     # del panel y no un alta real).
     altas = [t for t in primera.to_numpy() if t > 0]
 
+    # En que meses pudo observarse cada evento. Una baja necesita `min_future_months` de
+    # margen para confirmarse; una pausa, un mes de ausencia y un retorno posterior.
+    posibles_baja = range(1, max_t - min_future_months + 2)
+    posibles_pausa = range(1, max_t)
+    posibles_alta = range(1, max_t + 1)
+
     return pd.concat(
         [
-            _distribucion(bajas, calendario, "baja definitiva"),
-            _distribucion(episodios["t_baja"].add(1).tolist(), calendario, "inicio de pausa"),
-            _distribucion(episodios["t_alta"].tolist(), calendario, "reactivacion"),
-            _distribucion(altas, calendario, "alta nueva"),
+            _distribucion(bajas, calendario, "baja definitiva", posibles_baja),
+            _distribucion(
+                episodios["t_baja"].add(1).tolist(), calendario, "inicio de pausa", posibles_pausa
+            ),
+            _distribucion(
+                episodios["t_alta"].tolist(), calendario, "reactivacion", range(2, max_t + 1)
+            ),
+            _distribucion(altas, calendario, "alta nueva", posibles_alta),
         ],
         ignore_index=True,
     )
@@ -314,11 +332,34 @@ def _meses_cercanos(meses: pd.Series) -> bool:
     return False
 
 
-def _distribucion(ts: list[int], calendario: dict[int, int], etiqueta: str) -> pd.DataFrame:
-    meses = pd.Series([calendario[t] % 100 for t in ts if t in calendario], dtype="Int64")
-    conteo = meses.value_counts().reindex(range(1, 13), fill_value=0).sort_index()
+def _distribucion(
+    ts: list[int],
+    calendario: dict[int, int],
+    etiqueta: str,
+    ts_posibles: Iterable[int],
+) -> pd.DataFrame:
+    """Reparto por mes calendario, corregido por cuantas veces se observo cada mes.
+
+    `ts_posibles` son los indices de periodo en los que el evento podia ocurrir. Contados
+    por mes calendario dan la "cobertura": cuantas oportunidades hubo de ver un enero, un
+    febrero, etc. El indice es la tasa por oportunidad de cada mes contra la tasa global,
+    asi que un panel que no cubre años enteros deja de inventar picos.
+
+    La columna `pct` queda sin corregir a proposito: es el reparto crudo de lo observado,
+    util para saber sobre cuantos casos se esta hablando.
+    """
+    conteo = _por_mes(ts, calendario)
+    cobertura = _por_mes(ts_posibles, calendario)
+
     total = int(conteo.sum())
-    esperado = total / 12 if total else 1
+    total_cobertura = int(cobertura.sum())
+    if not total or not total_cobertura:
+        indice = np.full(12, np.nan)
+    else:
+        esperado = cobertura.to_numpy() * (total / total_cobertura)
+        indice = np.divide(
+            conteo.to_numpy(), esperado, out=np.full(12, np.nan), where=esperado > 0
+        )
 
     return pd.DataFrame(
         {
@@ -326,6 +367,12 @@ def _distribucion(ts: list[int], calendario: dict[int, int], etiqueta: str) -> p
             "mes": [NOMBRE_MES[m - 1] for m in conteo.index],
             "n": conteo.to_numpy(),
             "pct": (conteo.to_numpy() / max(total, 1) * 100).round(1),
-            "indice": np.round(conteo.to_numpy() / esperado, 2),
+            "indice": np.round(indice, 2),
         }
     )
+
+
+def _por_mes(ts: Iterable[int], calendario: dict[int, int]) -> pd.Series:
+    """Cuenta indices de periodo por mes calendario, con los 12 meses siempre presentes."""
+    meses = pd.Series([calendario[t] % 100 for t in ts if t in calendario], dtype="Int64")
+    return meses.value_counts().reindex(range(1, 13), fill_value=0).sort_index()

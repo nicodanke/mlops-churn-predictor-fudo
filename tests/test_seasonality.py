@@ -129,3 +129,56 @@ def test_resumen_por_pais():
     assert chile["cuentas"] == 5
     assert chile["con_pausa"] == 5
     assert chile["pct_pausan"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# El indice del ciclo anual tiene que medir el negocio, no la forma del panel
+# ---------------------------------------------------------------------------
+
+
+def panel_de_meses(periodos, cuentas_por_periodo):
+    """Panel donde cada periodo tiene su propio conjunto de cuentas, que no vuelven.
+
+    Sirve para controlar exactamente cuantas bajas cae en cada mes calendario.
+    """
+    filas = []
+    siguiente_id = 1
+    for t, periodo in enumerate(periodos):
+        for _ in range(cuentas_por_periodo[t]):
+            filas.append({"id": siguiente_id, "t": t, "periodo": periodo})
+            siguiente_id += 1
+    return pd.DataFrame(filas)
+
+
+def test_un_panel_que_no_cubre_años_enteros_no_inventa_picos():
+    """20 meses cubren enero dos veces y septiembre una sola.
+
+    Con la misma tasa de bajas por mes observado, los dos tienen que dar indice ~1.00.
+    Medido contra un doceavo fijo, enero daria el doble que septiembre sin que haya
+    pasado nada: el grafico dibujaria el largo del panel.
+    """
+    periodos = [202501 + i if i < 12 else 202601 + (i - 12) for i in range(20)]
+    # Misma cantidad de cuentas que se van en cada periodo.
+    panel = panel_de_meses(periodos, [10] * 20)
+
+    perfil = monthly_profile(panel, min_future_months=3)
+    bajas = perfil[perfil["evento"] == "baja definitiva"].set_index("mes")
+
+    indices = bajas["indice"].dropna()
+    assert indices.between(0.95, 1.05).all(), indices.to_dict()
+
+
+def test_un_mes_con_el_doble_de_bajas_si_se_ve_como_pico():
+    """La correccion no puede tapar la señal que si existe."""
+    periodos = [202501 + i if i < 12 else 202601 + (i - 12) for i in range(20)]
+    cuentas = [10] * 20
+    # Abril (t=3 y t=15) se lleva el triple de bajas que el resto.
+    cuentas[3] = 30
+    cuentas[15] = 30
+    panel = panel_de_meses(periodos, cuentas)
+
+    bajas = monthly_profile(panel, min_future_months=3).query("evento == 'baja definitiva'")
+    por_mes = bajas.set_index("mes")["indice"]
+    # La baja se registra en el mes siguiente al ultimo visto: abril -> mayo.
+    assert por_mes["mayo"] > 2.0
+    assert por_mes.drop("mayo").dropna().max() < 1.1

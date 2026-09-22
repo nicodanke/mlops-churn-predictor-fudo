@@ -240,7 +240,7 @@ hasta que alguien lo apruebe, y muestra la tabla de la decisión para decidir.
 **Llegó el snapshot de un mes nuevo.** Subirlo antes del día 5:
 
 ```bash
-make gcp-upload-data FILE=data/account_stats_202609.csv
+make gcp-upload-data FILE=data/account-stats-202609.csv
 ```
 
 El día 5 se scorea con el campeón y el día 6 se reentrena con ese mes incluido.
@@ -285,13 +285,13 @@ En la **terminal** de Cloud Shell, con el repo clonado:
 ```bash
 gcloud config set project mi-proyecto
 make gcp-cloudshell-setup                                  # Poetry, dependencias y bucket
-make gcp-cloudshell-upload FILE=~/account_stats_since_2024.csv   # ruta real al CSV
+make gcp-cloudshell-upload FILE="data/account-stats-*.csv"  # los 20 meses de una
 make gcp-cloudshell-train                                  # ~minutos
 make gcp-cloudshell-models                                 # modelos entrenados
 ```
 
-El CSV no está en git (tiene datos de cuentas reales). Se sube a Cloud Shell con *Más →
-Subir* y queda en el home, o se sube al bucket desde la computadora local con
+Los CSV no están en git (tienen datos de cuentas reales). Se suben a Cloud Shell con *Más →
+Subir* y quedan en el home, o se suben al bucket desde la computadora local con
 `make gcp-upload-data GCP_PROJECT=mi-proyecto FILE=data/...` (después del setup, que crea
 el bucket).
 

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Directorio con los batches de predicciones. Acepta gs://bucket/predictions en GCP.
     predictions_dir: str = str(PROJECT_ROOT / "outputs" / "predictions")
     model_dir: str = str(PROJECT_ROOT / "models")
+    # Reporte de EDA que escribe `churn eda`. En Cloud Run apunta al bucket montado.
+    eda_dir: str = str(PROJECT_ROOT / "outputs" / "eda")
     # Dashboard estatico. Si el directorio existe, la API tambien lo sirve en "/": en Cloud
     # Run van juntos en un solo servicio detras de Identity-Aware Proxy (ver main.py).
     web_dir: str = str(PROJECT_ROOT / "web")

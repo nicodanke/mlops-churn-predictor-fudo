@@ -85,6 +85,10 @@ score-llm: ## Scoring con diagnosticos redactados por Claude (requiere ANTHROPIC
 all: ## Pipeline completo: prepare -> train -> score
 	$(RUN) churn run-all
 
+.PHONY: eda
+eda: ## Estadistica de la base: salud, adopcion y señales de churn -> outputs/eda/stats.json
+	$(RUN) churn eda
+
 .PHONY: baseline
 baseline: ## Churn rate observado por periodo (el numero a batir)
 	$(RUN) churn baseline
@@ -191,6 +195,10 @@ docker-train: ## train dentro del contenedor del pipeline
 .PHONY: docker-score
 docker-score: ## score dentro del contenedor del pipeline
 	$(DC_RUN) score
+
+.PHONY: docker-eda
+docker-eda: ## Estadistica de la base dentro del contenedor del pipeline
+	$(DC_RUN) churn eda
 
 .PHONY: docker-drift
 docker-drift: ## Reporte de drift dentro del contenedor del pipeline
@@ -333,11 +341,16 @@ gcp-run-build: require-gcp-project ## [Clase 6] Construye la imagen de la API + 
 .PHONY: gcp-run-local
 gcp-run-local: ## [Clase 6] Corre la imagen en esta maquina en :$(API_PORT), antes de subirla
 	@test -d "$(GCP_RUN_DATA)/predictions" || { echo "No hay predicciones en $(GCP_RUN_DATA)/predictions. Generarlas con: make gcp-cloudshell-score"; exit 1; }
+	@# El reporte de EDA puede no existir todavia. Se crea vacio en vez de omitir el
+	@# volumen: docker crearia el directorio igual, pero como root y fuera del .gitignore.
+	@mkdir -p "$(GCP_RUN_DATA)/eda"
 	docker run --rm -p $(API_PORT):8000 \
 	  -v "$(PWD)/$(GCP_RUN_DATA)/predictions:/app/predictions:ro" \
 	  -v "$(PWD)/$(GCP_RUN_DATA)/model:/app/model:ro" \
+	  -v "$(PWD)/$(GCP_RUN_DATA)/eda:/app/eda:ro" \
 	  -e CHURN_API_PREDICTIONS_DIR=/app/predictions \
 	  -e CHURN_API_MODEL_DIR=/app/model \
+	  -e CHURN_API_EDA_DIR=/app/eda \
 	  $(GCP_RUN_IMAGE)
 
 .PHONY: gcp-run-push
@@ -352,6 +365,11 @@ gcp-run-data: require-gcp-project ## [Clase 6] Sube al bucket las predicciones q
 	  "$(GCP_RUN_DATA)/predictions/" gs://$(GCP_BUCKET)/$(GCP_RUN_PREFIX)/predictions/
 	gcloud storage rsync --delete-unmatched-destination-objects \
 	  "$(GCP_RUN_DATA)/model/" gs://$(GCP_BUCKET)/$(GCP_RUN_PREFIX)/model/
+	@# El reporte de EDA es opcional: si todavia no se genero, el dashboard muestra la
+	@# pestaña de riesgo igual y la de uso avisa que falta correr `churn eda`.
+	@test -d "$(GCP_RUN_DATA)/eda" && gcloud storage rsync --delete-unmatched-destination-objects \
+	  "$(GCP_RUN_DATA)/eda/" gs://$(GCP_BUCKET)/$(GCP_RUN_PREFIX)/eda/ \
+	  || echo "  (sin outputs/cloudshell/eda: la pestaña 'Uso de la base' queda vacia)"
 
 .PHONY: gcp-run-sa
 gcp-run-sa: require-gcp-project ## [Clase 6] Cuenta de servicio con solo lectura del bucket (una vez)
@@ -374,7 +392,7 @@ gcp-run-deploy: require-gcp-project ## [Clase 6] Despliega la imagen en Cloud Ru
 	  --execution-environment=gen2 \
 	  --cpu=1 --memory=1Gi --min-instances=0 --max-instances=2 \
 	  --allow-unauthenticated \
-	  --set-env-vars=CHURN_API_PREDICTIONS_DIR=/mnt/gcs/$(GCP_RUN_PREFIX)/predictions,CHURN_API_MODEL_DIR=/mnt/gcs/$(GCP_RUN_PREFIX)/model,CHURN_API_CORS_ORIGINS= \
+	  --set-env-vars=CHURN_API_PREDICTIONS_DIR=/mnt/gcs/$(GCP_RUN_PREFIX)/predictions,CHURN_API_MODEL_DIR=/mnt/gcs/$(GCP_RUN_PREFIX)/model,CHURN_API_EDA_DIR=/mnt/gcs/$(GCP_RUN_PREFIX)/eda,CHURN_API_CORS_ORIGINS= \
 	  --clear-volumes \
 	  --add-volume=name=gcs,type=cloud-storage,bucket=$(GCP_BUCKET),readonly=true,mount-options=implicit-dirs \
 	  --clear-volume-mounts \
@@ -456,8 +474,8 @@ gcp-bootstrap: ## Puesta a punto inicial de GCP (una vez): bucket, registry, per
 	GITHUB_REPO=$(GITHUB_REPO) bash deploy/bootstrap.sh
 
 .PHONY: gcp-upload-data
-gcp-upload-data: ## Sube un snapshot comprimido al bucket. FILE=data/account_stats_AAAAMM.csv
-	@test -n "$(FILE)" || { echo "Uso: make gcp-upload-data FILE=data/account_stats_202609.csv"; exit 1; }
+gcp-upload-data: ## Sube un snapshot comprimido al bucket. FILE=data/account-stats-AAAAMM.csv
+	@test -n "$(FILE)" || { echo "Uso: make gcp-upload-data FILE=data/account-stats-202609.csv"; exit 1; }
 	@# Sin este chequeo, un FILE inexistente subia un objeto vacio al bucket.
 	@test -s "$(FILE)" || { echo "No existe o esta vacio: $(FILE)"; exit 1; }
 	set -o pipefail; gzip -c "$(FILE)" | gcloud storage cp - gs://$(GCP_BUCKET)/raw/$$(basename "$(FILE)").gz
@@ -471,9 +489,11 @@ gcp-cloudshell-setup: ## [Cloud Shell] Instala las dependencias y crea el bucket
 	$(CLOUDSHELL) setup
 
 .PHONY: gcp-cloudshell-upload
-gcp-cloudshell-upload: ## [Cloud Shell] Sube un snapshot al bucket. FILE=~/account_stats_AAAAMM.csv
-	@test -n "$(FILE)" || { echo "Uso: make gcp-cloudshell-upload FILE=~/account_stats_202609.csv"; exit 1; }
-	$(CLOUDSHELL) upload "$(FILE)"
+gcp-cloudshell-upload: ## [Cloud Shell] Sube snapshots al bucket. FILE="data/account-stats-*.csv"
+	@test -n "$(FILE)" || { echo 'Uso: make gcp-cloudshell-upload FILE="data/account-stats-*.csv"'; exit 1; }
+	@# Sin comillas a proposito: asi FILE puede traer un patron y subir los 20 meses de
+	@# una. Subirlos de a uno es donde se saltea alguno, y un mes faltante no da error.
+	$(CLOUDSHELL) upload $(FILE)
 
 .PHONY: gcp-cloudshell-train
 gcp-cloudshell-train: ## [Cloud Shell] Entrena y guarda el modelo en gs://BUCKET/models/cloudshell/. RUN_ID opcional

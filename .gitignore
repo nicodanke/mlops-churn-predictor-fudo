@@ -10,6 +10,12 @@ outputs/
 models/*
 !models/.gitkeep
 
+# `churn promote` deja el historial de versiones y una copia de cada campeon al lado del
+# directorio del campeon. Con --champion-dir models eso cae en la raiz del repo; en GCP,
+# dentro de gs://BUCKET/models/. Son artefactos, igual que el modelo: no se versionan.
+registry.json
+releases/
+
 # La lista de precios real es informacion comercial sensible; se versiona la
 # plantilla y el ejemplo, no el archivo con los precios cargados.
 config/pricing.yaml

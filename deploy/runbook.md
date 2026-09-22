@@ -7,9 +7,9 @@ limpieza.
 Todo sale de `make`, y cada target imprime el comando de `gcloud` o de `docker` que corre
 por debajo, así que se puede seguir paso a paso lo que pasa en la nube.
 
-**Lo que se asume:** un proyecto de GCP con billing, el repo clonado en Cloud Shell y el
-snapshot mensual (`account_stats_since_2024.csv`) a mano. El detalle de las decisiones de
-arquitectura está en [`README.md`](README.md) de esta misma carpeta.
+**Lo que se asume:** un proyecto de GCP con billing, el repo clonado en Cloud Shell y los
+snapshots mensuales (`account-stats-AAAAMM.csv`, uno por mes) a mano. El detalle de las
+decisiones de arquitectura está en [`README.md`](README.md) de esta misma carpeta.
 
 ---
 
@@ -26,15 +26,24 @@ librerías que usa la imagen del pipeline (`poetry.lock`).
 
 ## 1. Los datos al bucket
 
-El CSV no está en git: tiene datos de cuentas reales y pesa ~160 MB. Se sube a Cloud Shell
-con *⋮ Más → Subir* y después:
+Los CSV no están en git: tienen datos de cuentas reales y son ~140 MB en total (20
+archivos, uno por mes, de 202501 a 202608). Se suben a Cloud Shell con *⋮ Más → Subir* y
+después, **todos de una**:
 
 ```bash
-make gcp-cloudshell-upload FILE=~/account_stats_since_2024.csv
+make gcp-cloudshell-upload FILE="data/account-stats-*.csv"
 ```
 
-Se guarda comprimido en `gs://TU_PROYECTO-churn-fudo/raw/`. El mes siguiente se repite con
-el archivo nuevo: los snapshots se acumulan y el pipeline los concatena solo.
+Se guardan comprimidos en `gs://TU_PROYECTO-churn-fudo/raw/`, y al terminar imprime lo que
+quedó en el bucket para poder contarlos. El mes siguiente se repite con el archivo nuevo:
+los snapshots se acumulan y el pipeline los concatena solo.
+
+> **Que no falte ningún mes.** El índice de período del panel es denso sobre los meses
+> *presentes*: si falta uno del medio, los de sus dos lados quedan como consecutivos, los
+> lags comparan contra el mes equivocado y una cuenta que se fue en el mes faltante parece
+> no haberse ido nunca. No da error. El pipeline avisa con un `WARNING` al armar el panel
+> (`Faltan N periodo(s) en el medio de la serie`) — si aparece, conseguir esos snapshots
+> antes de entrenar. Por eso conviene subirlos con el patrón y no de a uno.
 
 **Opcional, precios reales.** Sin esto el revenue en riesgo sale de la lista de ejemplo y
 es ilustrativo. `config/pricing.yaml` tampoco está en git, así que se sube desde tu
@@ -76,6 +85,11 @@ Deja el batch del último mes en `outputs/cloudshell/predictions/<periodo>/`: un
 cuenta con su probabilidad de baja, el riesgo económico y las features que explican cada
 predicción.
 
+De paso escribe `outputs/cloudshell/eda/stats.json`, la estadística descriptiva de la base
+que alimenta la pestaña **Uso de la base** del dashboard. Sale del mismo panel que las
+predicciones, por eso se generan juntos: así las dos pestañas hablan siempre del mismo mes.
+Se puede saltear con `churn score --no-eda`.
+
 ## 4. Ver el dashboard
 
 **Solo para vos, rápido:**
@@ -87,6 +101,10 @@ make gcp-cloudshell-serve
 Después, botón **Vista previa en la Web** → *puerto 8080*. Para la API, agregar `/docs` a
 esa URL. Se corta con `Ctrl+C`. Esa URL **solo abre con tu cuenta**: a otra persona le da
 error.
+
+El dashboard tiene dos pestañas: **Riesgo** (a quién llamar este mes) y **Uso de la base**
+(contra qué base se lee eso: crecimiento, churn base, adopción del producto). Se puede
+linkear una de las dos agregando `#riesgo` o `#uso` a la URL.
 
 **Para compartir un link**, ver el paso siguiente.
 
@@ -113,7 +131,7 @@ Y cada vez que cambie el código o los datos:
 make gcp-run-build     # docker build de la imagen de la API + dashboard
 make gcp-run-local     # opcional: probar esa imagen en :8000 antes de subirla
 make gcp-run-push      # docker push al registry
-make gcp-run-data      # sube las predicciones al bucket que monta el servicio
+make gcp-run-data      # sube predicciones, modelo y estadística al bucket que monta el servicio
 make gcp-run-deploy    # gcloud run deploy con esa imagen; imprime la URL
 ```
 
@@ -169,7 +187,7 @@ cambio alto, o cambió el código del modelo.
 
 ```bash
 # 1. Si hay datos nuevos, subirlos
-make gcp-cloudshell-upload FILE=~/account_stats_202604.csv
+make gcp-cloudshell-upload FILE=~/account-stats-202609.csv
 
 # 2. Entrenar un modelo nuevo (queda como una versión más, no pisa la anterior)
 make gcp-cloudshell-train
@@ -180,8 +198,15 @@ gcloud storage cat gs://TU_PROYECTO-churn-fudo/models/cloudshell/<nuevo>/metadat
 gcloud storage cat gs://TU_PROYECTO-churn-fudo/models/cloudshell/<anterior>/metadata.json
 ```
 
-Lo que se mira es el **PR-AUC de test**: si el nuevo no le gana al anterior, no hay razón
-para cambiarlo. También conviene mirar que `training_periods` incluya el mes nuevo.
+Lo que se mira es el **PR-AUC de test**, y que `training_periods` incluya el mes nuevo.
+
+Pero el PR-AUC no alcanza para decidir solo. Al reemplazar el dataset de 2024-2025 por el
+de 2025-2026 los dos modelos **empataron** (0.6674 contra 0.6681) y aun así convino cambiar,
+por razones que la métrica no muestra: el modelo viejo estaba entrenado con datos que ya no
+existían en el bucket —no se podía reentrenar ni auditar— y `make gcp-cloudshell-drift`
+marcaba 43 features con PSI por encima de 0.25. Un empate con datos más frescos y menos
+drift es una mejora, aunque el número no se mueva. Al revés también vale: un PR-AUC más
+alto entrenado sobre un panel al que le falta un mes no es una mejora, es un error.
 
 ```bash
 # 4. Si el nuevo es mejor, generar predicciones y publicarlas

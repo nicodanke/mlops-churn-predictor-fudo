@@ -6,10 +6,12 @@ modelo no obligue a releer y reprocesar el CSV completo cada vez.
     prepare  CSV crudo   -> panel etiquetado + features   (outputs/interim/features.parquet)
     train    features    -> modelo + metricas             (models/)
     score    features    -> predicciones del ultimo mes   (outputs/predictions/)
+    eda      features    -> estadistica de la base        (outputs/eda/stats.json)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -18,6 +20,7 @@ import pandas as pd
 from churn.config import Config
 from churn.data.labeling import build_labels, churn_rate_by_period
 from churn.data.loader import load_panel, resolve_sources
+from churn.eda.stats import build_report
 from churn.features.builder import build_features
 from churn.models.artifact import save_model
 from churn.models.train import train_model
@@ -86,6 +89,23 @@ def train(cfg: Config, features: pd.DataFrame | None = None, model_dir: str | Pa
     artifact, report = train_model(features, cfg)
     save_model(artifact, model_dir)
     return artifact, report
+
+
+def eda(cfg: Config, features: pd.DataFrame | None = None) -> tuple[dict, Path]:
+    """Calcula la estadistica descriptiva de la base y la deja escrita en JSON.
+
+    El JSON es el contrato con la API: el dashboard no recalcula nada, lee lo que dejo
+    este paso. Igual que el scoring, corre una vez por mes y queda servido desde disco
+    (o desde el bucket, que en GCP es el mismo archivo).
+    """
+    features = features if features is not None else prepare(cfg)
+    report = build_report(features, cfg)
+
+    destino = Path(cfg.path_of("eda.output_dir", "outputs/eda")) / "stats.json"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    logger.info("Reporte de EDA guardado en %s", destino)
+    return report, destino
 
 
 def churn_baseline_table(cfg: Config, features: pd.DataFrame | None = None) -> pd.DataFrame:

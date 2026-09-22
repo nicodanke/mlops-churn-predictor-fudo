@@ -42,6 +42,7 @@ services:
     environment:
       CHURN_API_PREDICTIONS_DIR: /app/outputs/predictions
       CHURN_API_MODEL_DIR: /app/models
+      CHURN_API_EDA_DIR: /app/outputs/eda
       CHURN_API_CORS_ORIGINS: "*"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

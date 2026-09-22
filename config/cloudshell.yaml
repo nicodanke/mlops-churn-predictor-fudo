@@ -17,6 +17,10 @@ data:
   interim_path: "outputs/cloudshell/panel.parquet"
   features_path: "outputs/cloudshell/features.parquet"
 
+eda:
+  # Igual que el scoring: aparte de outputs/eda para no pisar el reporte local.
+  output_dir: "outputs/cloudshell/eda"
+
 scoring:
   # Lo que sirve `make gcp-cloudshell-serve`. Aparte de outputs/predictions por lo mismo
   # que el cache: no mezclarse con las predicciones de `make score`.

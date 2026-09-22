@@ -76,7 +76,7 @@ cat >"$lifecycle" <<'JSON'
 JSON
 gcloud storage buckets update "gs://${BUCKET}" --lifecycle-file="$lifecycle" >/dev/null
 
-paso "Subiendo datos (comprimidos: el CSV pesa ~160 MB y gzip lo baja a una fraccion)"
+paso "Subiendo datos (comprimidos: son ~140 MB de CSV y gzip los baja a una fraccion)"
 shopt -s nullglob
 for csv in "$ROOT"/data/*.csv; do
   destino="gs://${BUCKET}/raw/$(basename "$csv").gz"
