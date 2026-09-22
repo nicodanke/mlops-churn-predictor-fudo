@@ -27,12 +27,18 @@ librerías que usa la imagen del pipeline (`poetry.lock`).
 ## 1. Los datos al bucket
 
 Los CSV no están en git: tienen datos de cuentas reales y son ~140 MB en total (20
-archivos, uno por mes, de 202501 a 202608). Se suben a Cloud Shell con *⋮ Más → Subir* y
-después, **todos de una**:
+archivos, uno por mes, de 202501 a 202608). Se suben a Cloud Shell con *⋮ Más → Subir*
+—quedan en el **home**, no en el repo— y de ahí al bucket, **todos de una**:
 
 ```bash
-make gcp-cloudshell-upload FILE="data/account-stats-*.csv"
+make gcp-cloudshell-upload FILE="~/account-stats-*.csv"
 ```
+
+> **No hace falta moverlos a `data/`.** En Cloud Shell el pipeline no lee `data/` sino
+> `data/bucket/`, que `cloudshell.sh` mantiene como espejo exacto de `gs://BUCKET/raw/`
+> con un `rsync` antes de cada `train`, `score` o `drift` (ver `raw_path` en
+> [`config/cloudshell.yaml`](../config/cloudshell.yaml)). El bucket es la fuente de
+> verdad: una vez subidos, los del home se pueden borrar y Cloud Shell se puede cerrar.
 
 Se guardan comprimidos en `gs://TU_PROYECTO-churn-fudo/raw/`, y al terminar imprime lo que
 quedó en el bucket para poder contarlos. El mes siguiente se repite con el archivo nuevo:

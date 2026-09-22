@@ -285,7 +285,7 @@ En la **terminal** de Cloud Shell, con el repo clonado:
 ```bash
 gcloud config set project mi-proyecto
 make gcp-cloudshell-setup                                  # Poetry, dependencias y bucket
-make gcp-cloudshell-upload FILE="data/account-stats-*.csv"  # los 20 meses de una
+make gcp-cloudshell-upload FILE="~/account-stats-*.csv"     # los 20 meses de una
 make gcp-cloudshell-train                                  # ~minutos
 make gcp-cloudshell-models                                 # modelos entrenados
 ```
