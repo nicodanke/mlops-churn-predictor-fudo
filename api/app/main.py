@@ -170,7 +170,7 @@ def summary(batch=Depends(get_batch)) -> BatchSummary:
     """Cabecera del dashboard: cuentas y revenue en riesgo por categoria."""
     _, meta = batch
     return BatchSummary(
-        periodo=meta["periodo_snapshot"],
+        periodo=meta["periodo_snapshotasas"],
         periodo_prediccion=meta["periodo_prediccion"],
         generated_at=meta["generated_at"],
         n_accounts=meta["n_accounts"],
