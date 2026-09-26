@@ -7,14 +7,14 @@ data:
   # Snapshot mensual. Acepta un archivo, un directorio o un patron, ademas de
   # gs://bucket/path para GCP:
   #
-  #   "data/account_stats_since_2024.csv"   un archivo puntual
-  #   "data/"                               todos los .csv y .parquet del directorio
-  #   "data/account_stats_*.csv"            los que matcheen el patron
+  #   "data/account-stats-202601.csv"   un archivo puntual
+  #   "data/"                           todos los .csv y .parquet del directorio
+  #   "data/account-stats-*.csv"        los que matcheen el patron (lo que se usa hoy)
   #
   # Con un directorio, actualizar es dejar caer el archivo del mes nuevo: se concatenan
   # solos y, si un (cuenta, periodo) viene repetido, gana el del archivo que ordena
   # ultimo por nombre.
-  raw_path: "data/account_stats_since_2024.csv"
+  raw_path: "data/account-stats-*.csv"
   # Cache intermedio en parquet (mucho mas rapido que releer el CSV).
   interim_path: "outputs/interim/panel.parquet"
   features_path: "outputs/interim/features.parquet"
@@ -77,7 +77,22 @@ features:
   # Familias de features a excluir del entrenamiento (match por substring).
   # Dejar vacio para usar todas. Ver `make train-sin-cobranza` para la variante que
   # excluye el estado de cobranza y mide cuanta señal hay en el uso del producto solo.
-  exclude_patterns: []
+  #
+  # cat_gastos: las categorias de gasto no existen antes de 202507 (el DW empezo a
+  # reportarlas ahi) y desde entonces su mediana sube todos los meses — 0 en 202507,
+  # 11 en 202608 — porque la funcionalidad se esta adoptando. Una feature que crece
+  # con el calendario funciona como reloj: separa bien dentro de los meses observados
+  # y en produccion sigue subiendo fuera del rango con el que se entreno. Es la de
+  # mayor PSI del panel por lejos (11.34, contra 0.25 del umbral alto).
+  #
+  # Sacarla sale gratis: son 12 de las 296 features y no aportan senal.
+  #
+  #   completo                  296 features   PR-AUC val 0.6554   test 0.6676
+  #   sin categorias de gasto   284 features   PR-AUC val 0.6590   test 0.6674
+  #
+  # Vale la pena revisarlo cuando la adopcion se estabilice: ahi dejan de ser un reloj
+  # y pasan a ser una senal de uso como cualquier otra.
+  exclude_patterns: ["cat_gastos"]
 
 split:
   # Split temporal estricto: nunca se entrena con periodos posteriores a los de test.
@@ -131,6 +146,20 @@ promotion:
   max_regression:
     roc_auc: 0.01
 
+monitoring:
+  # Drift: cuanto se corrieron los datos del mes que se scorea respecto de los meses con
+  # los que se entreno el modelo. Se mide con PSI (ver src/churn/monitoring/drift.py) y se
+  # consulta con `churn drift`.
+  psi_bins: 10
+  # Los cortes de siempre para leer un PSI: por debajo de 0.10 no pasa nada, entre 0.10 y
+  # 0.25 conviene mirarlo, y de 0.25 para arriba el modelo esta viendo otro mundo.
+  umbral_moderado: 0.10
+  umbral_alto: 0.25
+  # Cuantas features se muestran en el reporte, ordenadas por PSI.
+  top_n: 15
+  # Familias de features a dejar afuera del reporte (match por substring).
+  exclude_patterns: []
+
 risk:
   # Umbral de probabilidad por debajo del cual la cuenta se clasifica "no_churn".
   # Se puede fijar a mano o dejar en null para calibrarlo automaticamente sobre
@@ -148,6 +177,11 @@ explain:
   top_n_features: 8
   # Muestra maxima para el calculo de SHAP en batch (null = todas las filas).
   max_rows: null
+
+eda:
+  # Estadistica descriptiva de la base (`churn eda`). Deja stats.json ahi adentro y la
+  # API lo sirve en /api/v1/eda para la pestaña de uso del dashboard.
+  output_dir: "outputs/eda"
 
 scoring:
   output_dir: "outputs/predictions"

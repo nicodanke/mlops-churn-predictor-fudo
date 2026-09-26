@@ -24,6 +24,8 @@ const RISK_COLORS = {
 };
 
 const state = {
+  view: "riesgo",
+  eda: null,
   periodo: null,
   currency: "USD",
   risk: ["alto", "medio", "bajo"],
@@ -104,6 +106,8 @@ async function loadSession() {
 
 async function boot() {
   loadSession();
+  wireTabs();
+  wireChartResize();
   try {
     const periodos = await api("/api/v1/periodos");
     if (!periodos.length) {
@@ -231,6 +235,388 @@ async function loadImportance() {
         <div class="imp-track"><div class="imp-fill" style="width:${(r.mean_abs_shap / max) * 100}%"></div></div>
       </div>`)
     .join("");
+}
+
+/* ====================================================================== */
+/* Vista "Uso de la base": estadistica descriptiva que deja `churn eda`.    */
+/* ====================================================================== */
+
+/** El ancho del SVG se fija al dibujar, asi que hay que rehacerlo al cambiar el viewport. */
+function wireChartResize() {
+  let timer;
+  window.addEventListener("resize", () => {
+    if (!state.eda || state.view !== "uso") return;
+    clearTimeout(timer);
+    timer = setTimeout(() => { renderBaseChart(); renderChurnChart(); }, 160);
+  });
+}
+
+function wireTabs() {
+  $("tabs").querySelectorAll(".tab").forEach((tab) => {
+    tab.onclick = () => showView(tab.dataset.view);
+  });
+  // La pestaña viaja en el hash para poder mandar el link de una de las dos vistas.
+  window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
+  showView(location.hash.slice(1));
+}
+
+function showView(view) {
+  state.view = view === "uso" ? "uso" : "riesgo";
+  $("tabs").querySelectorAll(".tab")
+    .forEach((t) => t.classList.toggle("on", t.dataset.view === state.view));
+  $("view-riesgo").classList.toggle("hidden", state.view !== "riesgo");
+  $("view-uso").classList.toggle("hidden", state.view !== "uso");
+  // El selector de periodo solo aplica al batch de predicciones; la vista de uso
+  // describe el panel entero y no cambia con el mes elegido.
+  $("period-field").classList.toggle("hidden", state.view !== "riesgo");
+  if (location.hash.slice(1) !== state.view) location.hash = state.view;
+  if (state.view === "uso") loadEda();
+}
+
+async function loadEda() {
+  if (state.eda) return;  // el reporte es uno solo, no depende del periodo elegido
+  try {
+    state.eda = await api("/api/v1/eda");
+  } catch (error) {
+    $("eda-kpis").innerHTML =
+      `<p class="empty">No hay estadística de la base todavía: generala con <code>churn eda</code>. (${escapeHtml(error.message)})</p>`;
+    return;
+  }
+  renderEdaKpis();
+  renderBaseChart();
+  renderChurnChart();
+  renderAdopcion();
+  renderSenales();
+  renderCortes();
+}
+
+function renderEdaKpis() {
+  const { panel, base } = state.eda;
+  const cards = [
+    {
+      label: "Cuentas activas", value: num(base.cuentas_activas_ultimo), accent: "var(--chart-1)",
+      sub: `+${base.crecimiento_total.toFixed(1)}% desde ${periodLabel(panel.periodo_desde)} · ${base.crecimiento_mensual.toFixed(2)}% mensual`,
+    },
+    {
+      label: "Churn base", value: `${base.churn_rate_promedio.toFixed(2)}%`, accent: "var(--chart-2)",
+      sub: `mensual, entre ${base.churn_rate_min.toFixed(2)}% y ${base.churn_rate_max.toFixed(2)}% · es el número a batir`,
+    },
+    {
+      label: "Retención anual", value: `${base.retencion_anual.toFixed(0)}%`, accent: "var(--chart-1)",
+      sub: `vida media de una cuenta: ${base.vida_media_meses.toFixed(0)} meses`,
+    },
+    {
+      label: "Altas acumuladas", value: num(base.altas_totales), accent: "var(--chart-1)",
+      sub: `contra ${num(base.bajas_confirmadas_totales)} bajas confirmadas en ${panel.periodos} meses`,
+    },
+  ];
+  $("eda-kpis").innerHTML = cards
+    .map((c) => `
+      <div class="kpi" style="--accent:${c.accent}">
+        <div class="kpi-label">${c.label}</div>
+        <div class="kpi-value">${c.value}</div>
+        <div class="kpi-sub">${c.sub}</div>
+      </div>`)
+    .join("");
+}
+
+/* ------------------------------------------------------ graficos SVG */
+
+/* Dos graficos separados y no uno con dos ejes: cuentas activas y churn rate se miden
+ * en unidades distintas, y superponerlas en una sola caja deja que la escala elegida
+ * decida que historia se cuenta. */
+
+const CHART_PAD = { top: 16, right: 40, bottom: 22, left: 40 };
+const CHART_H = 172;
+// Padding horizontal de .chart en el CSS. El SVG se dibuja con las unidades del
+// viewBox iguales a pixeles, asi que 2px de trazo son 2px en pantalla.
+const CHART_PAD_X = 20;
+
+/** Escalas del area de dibujo.
+ *
+ * `band` cambia como se reparte el eje x. Una linea une puntos, asi que el primero y el
+ * ultimo van pegados a los bordes; una barra ocupa una franja, asi que su centro cae en
+ * el medio de la franja. Usar la escala de linea para barras desalinea las etiquetas del
+ * eje y el crosshair respecto de la barra que señalan — medio ancho de barra de error.
+ */
+function chartFrame(el, n, maxValue, band = false) {
+  // clientWidth incluye el padding de .chart (20px por lado), que no es area de dibujo.
+  // Si el ancho da 0 la vista todavia esta oculta: se usa un ancho razonable y el
+  // listener de resize vuelve a dibujar cuando se muestre.
+  const width = Math.max((el.clientWidth || 600) - 2 * CHART_PAD_X, 260);
+  const inner = {
+    w: width - CHART_PAD.left - CHART_PAD.right,
+    h: CHART_H - CHART_PAD.top - CHART_PAD.bottom,
+  };
+  // Escala desde cero: en una serie de conteos o de tasas, recortar la base exagera
+  // visualmente cualquier variacion.
+  const top = maxValue * 1.12 || 1;
+  const paso = inner.w / n;
+  return {
+    width,
+    inner,
+    paso,
+    x: band
+      ? (i) => CHART_PAD.left + i * paso + paso / 2
+      : (i) => CHART_PAD.left + (n === 1 ? inner.w / 2 : (i / (n - 1)) * inner.w),
+    y: (v) => CHART_PAD.top + inner.h - (v / top) * inner.h,
+    top,
+  };
+}
+
+function chartTip(el) {
+  let tip = el.querySelector(".chart-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "chart-tip";
+    el.appendChild(tip);
+  }
+  return tip;
+}
+
+/** Crosshair + tooltip: el grafico se lee con el mouse, no solo de un vistazo. */
+function wireHover(el, svg, puntos, scale, describe) {
+  const tip = chartTip(el);
+  const cursor = svg.querySelector(".cursor");
+  const marker = svg.querySelector(".marker");
+  const hit = svg.querySelector(".hit");
+
+  hit.addEventListener("mousemove", (event) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((event.clientX - rect.left) / rect.width) * scale.width;
+    let i = 0, best = Infinity;
+    puntos.forEach((p, k) => {
+      const d = Math.abs(scale.x(k) - px);
+      if (d < best) { best = d; i = k; }
+    });
+    const cx = scale.x(i), cy = scale.y(puntos[i].v);
+    cursor.setAttribute("x1", cx); cursor.setAttribute("x2", cx);
+    cursor.style.opacity = 1;
+    marker.setAttribute("cx", cx); marker.setAttribute("cy", cy);
+    marker.style.opacity = 1;
+    tip.innerHTML = describe(puntos[i]);
+    // El viewBox mide lo mismo que la caja de dibujo, asi que la coordenada del SVG
+    // se traslada al contenedor sumando su padding.
+    tip.style.left = `${CHART_PAD_X + cx}px`;
+    tip.style.top = `${cy - 8}px`;
+    tip.style.opacity = 1;
+  });
+  hit.addEventListener("mouseleave", () => {
+    tip.style.opacity = 0;
+    cursor.style.opacity = 0;
+    marker.style.opacity = 0;
+  });
+}
+
+// Ancho aproximado de una etiqueta "ene 2025" mas su aire. Por debajo de esto dos
+// etiquetas contiguas se tocan.
+const TICK_MIN_PX = 62;
+
+/** Etiquetas del eje x: solo las que entran sin pisarse.
+ *
+ * El ultimo periodo siempre lleva etiqueta — es el que se busca al mirar el grafico —
+ * y si el tick regular anterior le queda encima, gana el ultimo y el otro se cae.
+ */
+function xTicks(puntos, scale) {
+  const cada = Math.max(1, Math.ceil(puntos.length / 7));
+  const ultimo = puntos.length - 1;
+  const indices = puntos.map((_, i) => i).filter((i) => i % cada === 0 && i !== ultimo);
+  while (indices.length && scale.x(ultimo) - scale.x(indices[indices.length - 1]) < TICK_MIN_PX) {
+    indices.pop();
+  }
+  indices.push(ultimo);
+
+  return indices
+    .map((i) =>
+      `<text class="axis-label" x="${scale.x(i).toFixed(1)}" y="${CHART_H - 6}" text-anchor="middle">${periodLabel(puntos[i].periodo)}</text>`)
+    .join("");
+}
+
+function renderBaseChart() {
+  const el = $("chart-base");
+  const puntos = state.eda.base.serie.map((r) => ({ ...r, v: r.cuentas_activas }));
+  const max = Math.max(...puntos.map((p) => p.v));
+  const scale = chartFrame(el, puntos.length, max);
+
+  const linea = puntos.map((p, i) => `${i ? "L" : "M"}${scale.x(i).toFixed(1)},${scale.y(p.v).toFixed(1)}`).join(" ");
+  const base = CHART_PAD.top + scale.inner.h;
+  const area = `${linea} L${scale.x(puntos.length - 1).toFixed(1)},${base} L${scale.x(0).toFixed(1)},${base} Z`;
+
+  const ultimo = puntos[puntos.length - 1];
+  const grid = [0, 0.5, 1].map((f) => {
+    const y = scale.y(scale.top * f);
+    return `<line class="grid-line" x1="${CHART_PAD.left}" x2="${scale.width - CHART_PAD.right}" y1="${y}" y2="${y}"/>
+            <text class="axis-label" x="${CHART_PAD.left - 6}" y="${y + 3}" text-anchor="end">${num(Math.round(scale.top * f))}</text>`;
+  }).join("");
+
+  el.innerHTML = `
+    <svg viewBox="0 0 ${scale.width} ${CHART_H}" role="img"
+         aria-label="Cuentas activas por mes, de ${num(puntos[0].v)} en ${periodLabel(puntos[0].periodo)} a ${num(ultimo.v)} en ${periodLabel(ultimo.periodo)}">
+      ${grid}
+      <path class="serie-area" d="${area}"/>
+      <path class="serie-line" d="${linea}"/>
+      <circle class="punto-final" cx="${scale.x(puntos.length - 1)}" cy="${scale.y(ultimo.v)}" r="4"/>
+      <text class="valor-final" x="${scale.x(puntos.length - 1) + 7}" y="${scale.y(ultimo.v) + 4}">${num(ultimo.v)}</text>
+      ${xTicks(puntos, scale)}
+      <line class="cursor" y1="${CHART_PAD.top}" y2="${base}"/>
+      <circle class="marker" r="5"/>
+      <rect class="hit" x="0" y="0" width="${scale.width}" height="${CHART_H}"/>
+    </svg>`;
+  wireHover(el, el.querySelector("svg"), puntos, scale, (p) =>
+    `<strong>${num(p.v)}</strong> cuentas<br>${periodLabel(p.periodo)}${p.altas ? ` · ${num(p.altas)} altas` : ""}`);
+
+  const { base: b, panel } = state.eda;
+  $("chart-base-legend").textContent =
+    `${num(b.cuentas_activas_primero)} cuentas en ${periodLabel(panel.periodo_desde)} y ${num(b.cuentas_activas_ultimo)} en ` +
+    `${periodLabel(panel.periodo_hasta)}: la base crece ${b.crecimiento_mensual.toFixed(2)}% por mes. ` +
+    `Cualquier número en valores absolutos hay que leerlo contra este crecimiento.`;
+}
+
+function renderChurnChart() {
+  const el = $("chart-churn");
+  const puntos = state.eda.base.serie
+    .filter((r) => r.churn_rate !== null)
+    .map((r) => ({ ...r, v: r.churn_rate }));
+  const promedio = state.eda.base.churn_rate_promedio;
+  const max = Math.max(...puntos.map((p) => p.v), promedio);
+  const scale = chartFrame(el, puntos.length, max, true);
+  const base = CHART_PAD.top + scale.inner.h;
+
+  // 4px de hueco entre barras contiguas: sin separacion la serie se lee como un bloque.
+  const ancho = Math.max(4, scale.paso - 4);
+  const barras = puntos.map((p, i) => {
+    const y = scale.y(p.v);
+    return `<rect class="serie-bar" x="${(scale.x(i) - ancho / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${ancho.toFixed(1)}" height="${(base - y).toFixed(1)}" rx="3"/>`;
+  }).join("");
+
+  const yRef = scale.y(promedio);
+  const grid = [0, 0.5, 1].map((f) => {
+    const y = scale.y(scale.top * f);
+    return `<line class="grid-line" x1="${CHART_PAD.left}" x2="${scale.width - CHART_PAD.right}" y1="${y}" y2="${y}"/>
+            <text class="axis-label" x="${CHART_PAD.left - 6}" y="${y + 3}" text-anchor="end">${(scale.top * f).toFixed(1)}%</text>`;
+  }).join("");
+
+  el.innerHTML = `
+    <svg viewBox="0 0 ${scale.width} ${CHART_H}" role="img"
+         aria-label="Churn rate mensual confirmado, promedio ${promedio.toFixed(2)} por ciento">
+      ${grid}
+      ${barras}
+      <line class="ref-line" x1="${CHART_PAD.left}" x2="${scale.width - CHART_PAD.right}" y1="${yRef}" y2="${yRef}"/>
+      <text class="ref-label" x="${scale.width - CHART_PAD.right + 4}" y="${yRef + 3}">${promedio.toFixed(2)}%</text>
+      ${xTicks(puntos, scale)}
+      <line class="cursor" y1="${CHART_PAD.top}" y2="${base}"/>
+      <circle class="marker" r="5"/>
+      <rect class="hit" x="0" y="0" width="${scale.width}" height="${CHART_H}"/>
+    </svg>`;
+  wireHover(el, el.querySelector("svg"), puntos, scale, (p) =>
+    `<strong>${p.v.toFixed(2)}%</strong> de churn<br>${periodLabel(p.periodo)} · ${num(p.bajas_confirmadas)} de ${num(p.cuentas_evaluables)} cuentas`);
+
+  const sin = state.eda.base.periodos_sin_etiqueta;
+  $("chart-churn-legend").textContent =
+    `La línea de puntos es el churn base: ${promedio.toFixed(2)}% mensual. Un modelo que no aporta nada acierta ` +
+    `a ese ritmo, así que es el piso contra el que se compara. ` +
+    (sin.length
+      ? `Los últimos ${sin.length} meses no aparecen: para confirmar una baja hace falta ver los 3 meses siguientes.`
+      : "");
+}
+
+/* ------------------------------------------------------- adopcion */
+
+function renderAdopcion() {
+  const { adopcion } = state.eda;
+  $("adopcion-sub").textContent =
+    `Porcentaje de las ${num(adopcion.cuentas)} cuentas activas de ${periodLabel(adopcion.periodo)} ` +
+    `con rastro de cada funcionalidad en el mes.`;
+
+  $("eda-adopcion").innerHTML = adopcion.grupos
+    .map((g) => `
+      <div class="adop-grupo">
+        <h3>${escapeHtml(g.grupo)}</h3>
+        ${g.items.map(adopRow).join("")}
+      </div>`)
+    .join("");
+}
+
+function adopRow(item) {
+  const mediana = item.mediana_entre_usuarios === null
+    ? ""
+    : ` · mediana de ${num(item.mediana_entre_usuarios)} entre quienes la usan`;
+  return `
+    <div class="adop-row" title="${escapeHtml(item.etiqueta)}: ${num(item.cuentas)} cuentas${mediana}">
+      <div class="adop-label">${escapeHtml(item.etiqueta)}</div>
+      <div class="adop-track"><div class="adop-fill" style="width:${item.pct}%"></div></div>
+      <div class="adop-pct">${item.pct.toFixed(0)}%</div>
+    </div>`;
+}
+
+/* --------------------------------------------- se queda / churnea */
+
+function renderSenales() {
+  const { senales, n_churn, n_se_queda } = state.eda.churn;
+
+  const leyenda = `
+    <div class="senal-head">
+      <span class="senal-key"><span class="senal-swatch" style="background:var(--chart-1)"></span>Se queda</span>
+      <span class="senal-key"><span class="senal-swatch" style="background:var(--chart-2)"></span>Se da de baja</span>
+      <span style="margin-left:auto">lift</span>
+    </div>`;
+
+  $("eda-senales").innerHTML = leyenda + senales.slice(0, 10).map(senalRow).join("");
+  $("eda-senales-legend").textContent =
+    `Sobre ${num(n_se_queda + n_churn)} meses-cuenta con etiqueta (${num(n_churn)} terminaron en baja). ` +
+    `El lift es el cociente de adopción: 0.33 significa que la funcionalidad aparece un 67% menos seguido ` +
+    `entre las cuentas que se van. Es descriptivo, no causal — una cuenta que ya dejó de operar deja de usar todo.`;
+}
+
+function senalRow(s) {
+  const fuerte = s.lift !== null && s.lift < 0.8 ? " fuerte" : "";
+  return `
+    <div class="senal-row">
+      <div class="senal-label">${escapeHtml(s.etiqueta)}</div>
+      <div class="senal-bars">
+        <div class="senal-bar">
+          <div class="senal-track"><div class="senal-fill queda" style="width:${s.adopcion_se_queda}%"></div></div>
+          <div class="senal-val">${s.adopcion_se_queda.toFixed(0)}%</div>
+        </div>
+        <div class="senal-bar">
+          <div class="senal-track"><div class="senal-fill churn" style="width:${s.adopcion_churn}%"></div></div>
+          <div class="senal-val">${s.adopcion_churn.toFixed(0)}%</div>
+        </div>
+      </div>
+      <div class="senal-lift${fuerte}">${s.lift === null ? "—" : s.lift.toFixed(2)}</div>
+    </div>`;
+}
+
+/* ------------------------------------------------- cortes de churn */
+
+function renderCortes() {
+  const { antiguedad } = state.eda.churn;
+  const { paises } = state.eda.base;
+  const max = Math.max(...antiguedad.map((a) => a.churn_rate), ...paises.map((p) => p.churn_rate || 0), 1);
+
+  const fila = (etiqueta, valor, sub) => `
+    <div class="corte-row" title="${escapeHtml(sub)}">
+      <div class="corte-label">${escapeHtml(etiqueta)}</div>
+      <div class="corte-track"><div class="corte-fill" style="width:${(valor / max) * 100}%"></div></div>
+      <div class="corte-val">${valor.toFixed(2)}%</div>
+    </div>`;
+
+  const primero = antiguedad[0];
+  const ultimo = antiguedad[antiguedad.length - 1];
+  const veces = primero && ultimo && ultimo.churn_rate ? (primero.churn_rate / ultimo.churn_rate).toFixed(1) : null;
+
+  $("eda-cortes").innerHTML = `
+    <div class="corte-bloque">
+      <h3>Por antigüedad de la cuenta</h3>
+      ${antiguedad.map((a) => fila(a.tramo, a.churn_rate, `${num(a.cuentas)} meses-cuenta evaluados`)).join("")}
+      ${veces ? `<p class="corte-nota">Una cuenta de menos de 3 meses se da de baja ${veces} veces más seguido que una de más de 4 años: el churn de Fudo es, sobre todo, un problema de los primeros meses.</p>` : ""}
+    </div>
+    <div class="corte-bloque">
+      <h3>Por país</h3>
+      ${paises.filter((p) => p.churn_rate !== null)
+        .map((p) => fila(p.pais, p.churn_rate, `${num(p.cuentas)} cuentas · ${p.pct_base.toFixed(1)}% de la base`))
+        .join("")}
+    </div>`;
 }
 
 /* ---------------------------------------------------------------- tabla */

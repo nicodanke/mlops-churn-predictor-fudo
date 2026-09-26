@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Directorio con los batches de predicciones. Acepta gs://bucket/predictions en GCP.
     predictions_dir: str = str(PROJECT_ROOT / "outputs" / "predictions")
     model_dir: str = str(PROJECT_ROOT / "models")
+    # Reporte de EDA que escribe `churn eda`. En Cloud Run apunta al bucket montado.
+    eda_dir: str = str(PROJECT_ROOT / "outputs" / "eda")
     # Dashboard estatico. Si el directorio existe, la API tambien lo sirve en "/": en Cloud
     # Run van juntos en un solo servicio detras de Identity-Aware Proxy (ver main.py).
     web_dir: str = str(PROJECT_ROOT / "web")
@@ -27,6 +29,10 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     # Tamano maximo de pagina en el listado de cuentas.
     max_page_size: int = 200
+    # Formato de los logs: "auto" | "json" | "text". Con "auto" se emite JSON dentro de
+    # Cloud Run (donde Cloud Logging lo parsea a campos consultables) y texto legible en
+    # local. Ver app/observability.py.
+    log_format: str = "auto"
 
     @property
     def cors_origin_list(self) -> list[str]:

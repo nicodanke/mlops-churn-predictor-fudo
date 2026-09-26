@@ -170,7 +170,7 @@ cmd_app() {
     --min-instances=0 --max-instances=2 \
     --no-allow-unauthenticated \
     --iap \
-    --set-env-vars="CHURN_API_PREDICTIONS_DIR=${MOUNT}/predictions,CHURN_API_MODEL_DIR=${CHAMPION},CHURN_API_CORS_ORIGINS=" \
+    --set-env-vars="CHURN_API_PREDICTIONS_DIR=${MOUNT}/predictions,CHURN_API_MODEL_DIR=${CHAMPION},CHURN_API_EDA_DIR=${MOUNT}/eda,CHURN_API_CORS_ORIGINS=" \
     $(volume_flags ",readonly=true")
 
   # Por las dudas de que alguna vez se haya desplegado publico.

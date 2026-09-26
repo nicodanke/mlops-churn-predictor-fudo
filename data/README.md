@@ -1,7 +1,9 @@
 # Datos
 
-El snapshot mensual (`account_stats_since_2024.csv`) **no está versionado**: son ~160 MB
-con información de cuentas reales.
+Los snapshots mensuales (`account-stats-AAAAMM.csv`) **no están versionados**: son ~140 MB
+en total con información de cuentas reales.
+
+El panel en uso va de **202501 a 202608**: 20 archivos, 599.967 filas, 53.160 cuentas.
 
 ## Cómo obtenerlo
 
@@ -9,11 +11,13 @@ Es un export de la tabla `accounts_stats` del Data Warehouse de Fudo (también r
 en Fudata ClickHouse). Cada fila es una cuenta en un mes:
 
 ```sql
-SELECT * FROM accounts_stats WHERE periodo >= 202401 ORDER BY periodo, id
+SELECT * FROM accounts_stats WHERE periodo = 202609 ORDER BY id
 ```
 
-Colocá el archivo acá con el nombre `account_stats_since_2024.csv`, o apuntá
-`data.raw_path` en `config/model.yaml` a donde lo tengas.
+Guardá el resultado acá como `account-stats-202609.csv`. El nombre importa sólo por el
+orden alfabético (ver abajo); lo que define el período es la columna `Periodo`.
+
+`data.raw_path` en `config/model.yaml` apunta a `data/account-stats-*.csv`.
 
 ### Un archivo o varios
 
@@ -21,15 +25,15 @@ Colocá el archivo acá con el nombre `account_stats_since_2024.csv`, o apuntá
 
 | Valor | Qué lee |
 |---|---|
-| `data/account_stats_since_2024.csv` | ese archivo |
+| `data/account-stats-*.csv` | los que matcheen el patrón (lo que usa el proyecto) |
 | `data/` | todos los `.csv`, `.csv.gz` y `.parquet` del directorio |
-| `data/account_stats_*.csv` | los que matcheen el patrón |
+| `data/account-stats-202601.csv` | ese archivo |
 | `gs://bucket/raw/stats.csv` | desde Cloud Storage |
 
-Para la actualización mensual lo cómodo es dejar `raw_path: "data/"` y tirar ahí el archivo
-de cada mes. Los archivos se concatenan y, si un mismo (cuenta, período) aparece repetido,
-gana el del archivo que ordene último por nombre — así se puede corregir un mes ya cargado
-sin borrar el anterior.
+Actualizar es dejar caer el archivo del mes nuevo en `data/`. Los archivos se concatenan
+y, si un mismo (cuenta, período) aparece repetido, gana el del archivo que ordene último
+por nombre — así se puede corregir un mes ya cargado sin borrar el anterior. Por eso el
+nombre lleva el período en formato `AAAAMM`: ordena igual alfabética que cronológicamente.
 
 **El histórico tiene que quedarse.** El feature engineering necesita los tres meses previos
 de cada cuenta para calcular deltas y tendencias: si en `data/` queda sólo el mes nuevo,
@@ -38,11 +42,19 @@ esas features salen todas vacías y el modelo pierde casi toda su señal.
 ## Qué contiene
 
 - **Granularidad**: una fila por (cuenta, mes). Clave: `id` + `periodo` (YYYYMM).
-- **Cobertura**: desde 202401, se agrega un período a principios de cada mes.
+- **Cobertura**: desde 202501, se agrega un período a principios de cada mes.
 - **Sesgo de inclusión clave**: el reporte **solo incluye cuentas con estado comercial
   ACTIVE** al momento de generarse. De ahí se deriva la etiqueta de churn: si una cuenta
   deja de aparecer, dejó de estar activa.
-- **Columnas**: ~73, descriptas en [`docs/Fudata - Base de Funcionalidades.pdf`](../docs/).
+- **Columnas**: 73, descriptas en [`docs/Fudata - Base de Funcionalidades.pdf`](../docs/).
+- **Los nulos no son datos faltantes.** En las métricas de evento el DW escribe `null`,
+  no `0`, cuando la cuenta no usó la funcionalidad en el mes: en `ad_pc` el 10,6% de las
+  filas del último período son `null` y el 100% de las que tienen valor son mayores a
+  cero. El pipeline los trata como "no lo usó", que es lo que significan.
+- **Hay columnas que no existen en todo el rango.** `cat_gastos` y `sub_cat_gastos`
+  aparecen recién en 202507 y su mediana sube todos los meses (0 → 11 en 202608): es una
+  funcionalidad nueva en plena adopción. Están excluidas del modelo por eso — ver
+  `features.exclude_patterns` en [`config/model.yaml`](../config/model.yaml).
 
 ## Datos sensibles
 

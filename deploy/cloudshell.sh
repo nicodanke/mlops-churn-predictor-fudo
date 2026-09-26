@@ -12,6 +12,7 @@
 #                      gs://BUCKET/models/cloudshell/RUN_ID (por defecto, fecha y hora UTC)
 #    models            lista los modelos entrenados desde Cloud Shell
 #    score [RUN_ID]    predicciones del ultimo mes con ese modelo (por defecto, el ultimo)
+#    drift [RUN_ID]    cuanto se corrieron los datos desde que se entreno ese modelo
 #    serve [PUERTO]    API + dashboard en PUERTO (8080), para la Vista previa en la Web.
 #                      Solo lo ve la cuenta duena de la sesion de Cloud Shell
 #    publish           publica API + dashboard en Cloud Run con una URL PUBLICA, sin login,
@@ -40,6 +41,9 @@ SNAPSHOTS=data/bucket
 WORKDIR=outputs/cloudshell
 PREDICTIONS=$WORKDIR/predictions
 MODEL_LOCAL=$WORKDIR/model
+# Estadistica descriptiva de la base, para la pestaña "Uso de la base" del dashboard.
+# Coincide con eda.output_dir de config/cloudshell.yaml.
+EDA_LOCAL=$WORKDIR/eda
 
 # Servicio publico de `publish`. Es otro servicio que churn-app (deploy/cloudrun.sh), que
 # esta detras de Identity-Aware Proxy y a proposito no admite acceso publico.
@@ -75,6 +79,18 @@ memoria_gb() {
   fi
 }
 
+# El feature engineering llega a ~4 GB, y lo corren por igual train, score y drift cuando
+# no hay cache. Con menos memoria el proceso muere con un "Killed" y nada mas: mejor
+# avisarlo antes de esperar varios minutos.
+aviso_memoria() {
+  local mem_gb
+  mem_gb=$(memoria_gb)
+  if [[ -n "$mem_gb" ]] && awk -v m="$mem_gb" 'BEGIN {exit !(m < 4)}'; then
+    echo "Aviso: esta maquina tiene ${mem_gb} GB de RAM y el pipeline necesita ~4 GB." >&2
+    echo "Si termina en 'Killed', correrlo en local (make train) y reusar el modelo del bucket." >&2
+  fi
+}
+
 # Dependencias instaladas y credenciales para que Python lea y escriba el bucket.
 requiere_entorno() {
   if [[ ! -x .venv/bin/churn ]]; then
@@ -106,7 +122,7 @@ bajar_snapshots() {
   listado=$(gcloud storage ls -l "gs://${BUCKET}/raw/" 2>/dev/null || true)
   if ! grep -q 'gs://' <<<"$listado"; then
     echo "No hay snapshots en gs://${BUCKET}/raw/. Subirlos con:" >&2
-    echo "    make gcp-cloudshell-upload FILE=data/account_stats_since_2024.csv" >&2
+    echo "    make gcp-cloudshell-upload FILE=\"data/account-stats-*.csv\"" >&2
     exit 1
   fi
   # Columnas de `ls -l`: tamaño, fecha, URL.
@@ -115,7 +131,7 @@ bajar_snapshots() {
   if [[ -n "$vacios" ]]; then
     echo "Hay snapshots vacios en el bucket, de una subida que fallo:" >&2
     echo "$vacios" >&2
-    echo "Volver a subirlos con: make gcp-cloudshell-upload FILE=data/account_stats_since_2024.csv" >&2
+    echo "Volver a subirlos con: make gcp-cloudshell-upload FILE=\"data/account-stats-*.csv\"" >&2
     exit 1
   fi
 
@@ -159,28 +175,52 @@ cmd_setup() {
 }
 
 cmd_upload() {
-  local archivo=${1:?"Uso: bash deploy/cloudshell.sh upload data/account_stats_since_2024.csv"}
-
-  # `gcloud storage cp` sube lo que le llegue: si el archivo no existe, en el bucket queda
-  # un objeto vacio que recien explota al entrenar.
-  if [[ ! -s "$archivo" ]]; then
-    echo "No existe o esta vacio: $archivo" >&2
+  if [[ $# -eq 0 ]]; then
+    echo "Uso: bash deploy/cloudshell.sh upload data/account-stats-*.csv" >&2
     exit 1
   fi
+
+  # Acepta varios archivos de una: el panel son 20 snapshots mensuales y subirlos de a
+  # uno es donde se saltea alguno. Un mes faltante no da error — el panel deja los meses
+  # vecinos como consecutivos y los lags salen mal en silencio (ver load_panel).
+  local archivo
+  for archivo in "$@"; do
+    # `gcloud storage cp` sube lo que le llegue: si el archivo no existe, en el bucket
+    # queda un objeto vacio que recien explota al entrenar.
+    if [[ ! -s "$archivo" ]]; then
+      echo "No existe o esta vacio: $archivo" >&2
+      exit 1
+    fi
+  done
+
+  for archivo in "$@"; do
+    subir_snapshot "$archivo"
+  done
+
+  paso "En el bucket quedaron"
+  gcloud storage ls "gs://${BUCKET}/raw/" | sed 's/^/  /'
+}
+
+subir_snapshot() {
+  local archivo=$1
 
   if [[ "$archivo" != *.csv ]]; then
     gcloud storage cp "$archivo" "gs://${BUCKET}/raw/"
     return
   fi
 
-  # El CSV pesa ~160 MB y comprimido una fraccion; el loader lee .csv.gz directo. Se
-  # comprime a un archivo y no por un pipe, para no subir nada si gzip falla a mitad.
+  # Cada CSV mensual pesa ~7 MB y comprimido una fraccion; el loader lee .csv.gz directo.
+  # Se comprime a un archivo y no por un pipe, para no subir nada si gzip falla a mitad.
   local comprimido
   comprimido=$(mktemp)
-  trap "rm -f '$comprimido'" EXIT
-  paso "Comprimiendo $archivo"
-  gzip -c "$archivo" >"$comprimido"
+  paso "Comprimiendo y subiendo $(basename "$archivo")"
+  if ! gzip -c "$archivo" >"$comprimido"; then
+    rm -f "$comprimido"
+    echo "Fallo al comprimir $archivo" >&2
+    exit 1
+  fi
   gcloud storage cp "$comprimido" "gs://${BUCKET}/raw/$(basename "$archivo").gz"
+  rm -f "$comprimido"
 }
 
 cmd_train() {
@@ -188,16 +228,7 @@ cmd_train() {
   local model_dir="${MODELS}/${run_id}"
 
   requiere_entorno
-
-  # El feature engineering llega a ~4 GB. Con menos memoria el proceso muere con un
-  # "Killed" y nada mas: mejor avisarlo antes de esperar varios minutos.
-  local mem_gb
-  mem_gb=$(memoria_gb)
-  if [[ -n "$mem_gb" ]] && awk -v m="$mem_gb" 'BEGIN {exit !(m < 4)}'; then
-    echo "Aviso: esta maquina tiene ${mem_gb} GB de RAM y el pipeline necesita ~4 GB." >&2
-    echo "Si termina en 'Killed', entrenar en local con: make train" >&2
-  fi
-
+  aviso_memoria
   bajar_snapshots
 
   paso "Entrenando -> ${model_dir}"
@@ -210,20 +241,28 @@ cmd_train() {
   echo "  Scorear:   make gcp-cloudshell-score RUN_ID=${run_id}"
 }
 
-cmd_score() {
+# Modelo a usar: el RUN_ID que pidan o, si no dicen nada, el ultimo del bucket. Los RUN_ID
+# por defecto son fecha y hora, asi que el ultimo por nombre es el mas nuevo.
+modelo_elegido() {
   local model_dir
   if [[ -n "${1:-}" ]]; then
     model_dir="${MODELS}/$1"
   else
-    # Los RUN_ID por defecto son fecha y hora, asi que el ultimo por nombre es el mas nuevo.
     model_dir=$(gcloud storage ls "${MODELS}/" 2>/dev/null | sort | tail -1 | sed 's:/$::')
   fi
   if [[ -z "$model_dir" ]] || ! gcloud storage ls "${model_dir}/metadata.json" >/dev/null 2>&1; then
     echo "No hay un modelo en ${model_dir:-${MODELS}/}. Entrenar con: make gcp-cloudshell-train" >&2
-    exit 1
+    return 1
   fi
+  echo "$model_dir"
+}
+
+cmd_score() {
+  local model_dir
+  model_dir=$(modelo_elegido "${1:-}") || exit 1
 
   requiere_entorno
+  aviso_memoria
   bajar_snapshots
   mkdir -p "$WORKDIR"
 
@@ -254,7 +293,21 @@ cmd_score() {
 
   echo ""
   echo "  Predicciones en ${PREDICTIONS}"
+  echo "  Estadistica en ${EDA_LOCAL}"
   echo "  Dashboard:     make gcp-cloudshell-serve"
+}
+
+cmd_drift() {
+  local model_dir
+  model_dir=$(modelo_elegido "${1:-}") || exit 1
+
+  requiere_entorno
+  aviso_memoria
+  bajar_snapshots
+
+  paso "Drift del ultimo mes contra los datos con los que se entreno ${model_dir}"
+  GOOGLE_CLOUD_PROJECT="$PROJECT_ID" CHURN_CONFIG=config/cloudshell.yaml \
+    .venv/bin/churn drift --model-dir "$model_dir"
 }
 
 cmd_serve() {
@@ -295,6 +348,7 @@ cmd_serve() {
   cd api
   CHURN_API_PREDICTIONS_DIR="$ROOT/$PREDICTIONS" \
     CHURN_API_MODEL_DIR="$ROOT/$MODEL_LOCAL" \
+    CHURN_API_EDA_DIR="$ROOT/$EDA_LOCAL" \
     CHURN_API_WEB_DIR="$ROOT/web" \
     exec ../.venv/bin/uvicorn app.main:app --host "$host" --port "$puerto"
 }
@@ -330,6 +384,14 @@ cmd_publish() {
     "$PREDICTIONS/" "gs://${BUCKET}/${DEMO_PREFIX}/predictions/"
   gcloud storage rsync --delete-unmatched-destination-objects \
     "$MODEL_LOCAL/" "gs://${BUCKET}/${DEMO_PREFIX}/model/"
+  # Opcional: si `score` no llego a generar el reporte, el servicio arranca igual y la
+  # pestaña de uso avisa que falta correrlo.
+  if [[ -f "$EDA_LOCAL/stats.json" ]]; then
+    gcloud storage rsync --delete-unmatched-destination-objects \
+      "$EDA_LOCAL/" "gs://${BUCKET}/${DEMO_PREFIX}/eda/"
+  else
+    echo "  sin estadistica de la base: la pestaña 'Uso de la base' queda vacia"
+  fi
 
   paso "Repositorio de imagenes"
   if gc artifacts repositories describe churn --location="$REGION" >/dev/null 2>&1; then
@@ -378,7 +440,7 @@ EOF
     --cpu=1 --memory=1Gi \
     --min-instances=0 --max-instances=2 \
     --allow-unauthenticated \
-    --set-env-vars="CHURN_API_PREDICTIONS_DIR=/mnt/gcs/${DEMO_PREFIX}/predictions,CHURN_API_MODEL_DIR=/mnt/gcs/${DEMO_PREFIX}/model,CHURN_API_CORS_ORIGINS=" \
+    --set-env-vars="CHURN_API_PREDICTIONS_DIR=/mnt/gcs/${DEMO_PREFIX}/predictions,CHURN_API_MODEL_DIR=/mnt/gcs/${DEMO_PREFIX}/model,CHURN_API_EDA_DIR=/mnt/gcs/${DEMO_PREFIX}/eda,CHURN_API_CORS_ORIGINS=" \
     --clear-volumes \
     --add-volume="name=gcs,type=cloud-storage,bucket=${BUCKET},readonly=true,mount-options=implicit-dirs" \
     --clear-volume-mounts \
@@ -405,6 +467,7 @@ case "${1:-}" in
   train) shift; cmd_train "$@" ;;
   models) gcloud storage ls "${MODELS}/" ;;
   score) shift; cmd_score "$@" ;;
+  drift) shift; cmd_drift "$@" ;;
   serve) shift; cmd_serve "$@" ;;
   publish) cmd_publish ;;
   url) gc run services describe "$DEMO_SERVICE" --region="$REGION" --format='value(status.url)' ;;

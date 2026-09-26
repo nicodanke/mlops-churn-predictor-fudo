@@ -25,6 +25,7 @@ COPY web ./web
 
 ENV CHURN_API_PREDICTIONS_DIR=/app/outputs/predictions \
     CHURN_API_MODEL_DIR=/app/models \
+    CHURN_API_EDA_DIR=/app/outputs/eda \
     CHURN_API_WEB_DIR=/app/web \
     PORT=8000
 

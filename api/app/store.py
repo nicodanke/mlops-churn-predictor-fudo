@@ -97,6 +97,36 @@ class PredictionStore:
         self._stamps.clear()
 
 
+class EdaStore:
+    """Sirve el stats.json que dejo `churn eda`, releyendolo cuando cambia en disco.
+
+    Es un archivo chico (decenas de KB) y no se pagina, asi que no hace falta el
+    aparato de PredictionStore: alcanza con cachearlo y mirar la fecha de modificacion,
+    para que regenerar el reporte se vea sin reiniciar el servicio.
+    """
+
+    def __init__(self, eda_dir: str | Path, filename: str = "stats.json"):
+        self.path = Path(eda_dir) / filename
+        self._cache: dict[str, Any] | None = None
+        self._stamp: float = 0.0
+
+    def available(self) -> bool:
+        return self.path.exists()
+
+    def load(self) -> dict[str, Any]:
+        if not self.path.exists():
+            raise FileNotFoundError(
+                f"No hay reporte de EDA en {self.path}. Generarlo con `churn eda`."
+            )
+        stamp = self.path.stat().st_mtime
+        if self._cache is None or stamp > self._stamp:
+            with open(self.path, encoding="utf-8") as fh:
+                self._cache = json.load(fh)
+            self._stamp = stamp
+            logger.info("Reporte de EDA cargado desde %s", self.path)
+        return self._cache
+
+
 def _parse_json(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return value

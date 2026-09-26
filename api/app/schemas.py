@@ -108,3 +108,72 @@ class HealthResponse(BaseModel):
     predictions_loaded: bool
     periodos_disponibles: list[int]
     model_loaded: bool
+    eda_loaded: bool = False
+
+
+# --------------------------------------------------------------------- EDA ---
+# El reporte descriptivo que escribe `churn eda`. Las secciones se tipan a nivel de
+# encabezado y sus tablas quedan como filas sueltas: son listas largas y heterogeneas
+# que cambian cuando se agrega una funcionalidad al catalogo, y fijarlas aca obligaria
+# a tocar dos archivos por cada cambio del reporte.
+
+
+class EdaPanel(BaseModel):
+    filas: int
+    cuentas: int
+    periodos: int
+    periodo_desde: int
+    periodo_hasta: int
+    periodo_referencia: int
+
+
+class EdaBase(BaseModel):
+    """Salud de la base: cuanto crece y a que ritmo se va la gente."""
+
+    serie: list[dict[str, Any]]
+    cuentas_activas_ultimo: int
+    cuentas_activas_primero: int
+    crecimiento_total: float | None = None
+    crecimiento_mensual: float
+    altas_totales: int
+    bajas_confirmadas_totales: int
+    churn_rate_promedio: float
+    churn_rate_min: float | None = None
+    churn_rate_max: float | None = None
+    filas_etiquetadas: int
+    filas_ambiguas: int
+    retencion_anual: float | None = None
+    vida_media_meses: float | None = None
+    periodos_sin_etiqueta: list[int] = []
+    cuentas_con_pausas: int = 0
+    cuentas_estacionales: int = 0
+    pct_estacionales: float = 0.0
+    paises: list[dict[str, Any]] = []
+
+
+class EdaAdopcion(BaseModel):
+    """Que parte del producto usa una cuenta, sobre el ultimo periodo del panel."""
+
+    periodo: int
+    cuentas: int
+    grupos: list[dict[str, Any]]
+    volumen: list[dict[str, Any]]
+
+
+class EdaChurn(BaseModel):
+    """En que se diferencia una cuenta que se va de una que se queda."""
+
+    n_se_queda: int
+    n_churn: int
+    churn_rate: float | None = None
+    senales: list[dict[str, Any]]
+    estado_cobranza: list[dict[str, Any]] = []
+    antiguedad: list[dict[str, Any]] = []
+
+
+class EdaReport(BaseModel):
+    generated_at: str
+    panel: EdaPanel
+    base: EdaBase
+    adopcion: EdaAdopcion
+    churn: EdaChurn

@@ -26,22 +26,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from app.observability import RequestLogMiddleware, setup_logging
 from app.schemas import (
     AccountDetail,
     AccountPrediction,
     BatchSummary,
+    EdaReport,
     GlobalImportanceRow,
     HealthResponse,
     ModelInfo,
     PagedAccounts,
 )
 from app.settings import settings
-from app.store import PredictionStore, query_accounts
+from app.store import EdaStore, PredictionStore, query_accounts
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+setup_logging(settings.log_format)
 logger = logging.getLogger(__name__)
 
 store = PredictionStore(settings.predictions_dir)
+eda_store = EdaStore(settings.eda_dir)
 
 
 @asynccontextmanager
@@ -68,6 +71,10 @@ app = FastAPI(
         "riesgo economico y las features que explican cada prediccion."
     ),
 )
+
+# Una linea de log por request, con latencia y estado. Va primero para que mida tambien
+# lo que tarde el resto de los middlewares.
+app.add_middleware(RequestLogMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -104,6 +111,7 @@ def health() -> HealthResponse:
         predictions_loaded=bool(periods),
         periodos_disponibles=periods,
         model_loaded=model_ok,
+        eda_loaded=eda_store.available(),
     )
 
 
@@ -141,6 +149,20 @@ def model_info() -> ModelInfo:
         decision_threshold=meta.get("decision_threshold", 0.5),
         metrics=meta.get("metrics", {}),
     )
+
+
+@app.get(f"{API}/eda", response_model=EdaReport, tags=["meta"])
+def eda() -> EdaReport:
+    """Estadistica descriptiva de la base de cuentas, tal como la dejo `churn eda`.
+
+    Es contexto, no prediccion: responde contra que base esta mirando CX las
+    probabilidades de churn — cuanto crece la base, cuanto se va por mes y que parte
+    del producto usa realmente una cuenta.
+    """
+    try:
+        return EdaReport(**eda_store.load())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get(f"{API}/summary", response_model=BatchSummary, tags=["predicciones"])

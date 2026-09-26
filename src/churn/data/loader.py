@@ -19,9 +19,9 @@ def load_raw(path: str | Path) -> pd.DataFrame:
     Acepta tres formas, porque el DW puede entregar el historico completo o un archivo
     por mes:
 
-        data/account_stats.csv     un archivo puntual
-        data/                      todos los .csv y .parquet del directorio
-        data/stats_*.csv           un patron
+        data/account-stats-202601.csv   un archivo puntual
+        data/                           todos los .csv y .parquet del directorio
+        data/account-stats-*.csv        un patron
 
     Cuando son varios archivos se concatenan y, si un (cuenta, periodo) viene repetido,
     gana el del archivo que ordena ultimo por nombre — que con nombres con fecha es el
@@ -162,8 +162,9 @@ def load_panel(path: str | Path) -> pd.DataFrame:
         logger.warning("Hay %s filas duplicadas por (id, periodo); se conserva la ultima", dupes)
         df = df.drop_duplicates(["id", "periodo"], keep="last")
 
-    # Indice de periodo denso: 202401 -> 0, 202402 -> 1, ...
-    periods = sorted(df["periodo"].unique())
+    _warn_on_missing_periods(periods := sorted(int(p) for p in df["periodo"].unique()))
+
+    # Indice de periodo denso: 202501 -> 0, 202502 -> 1, ...
     period_index = {p: i for i, p in enumerate(periods)}
     df["t"] = df["periodo"].map(period_index).astype("int16")
 
@@ -189,6 +190,36 @@ def load_panel(path: str | Path) -> pd.DataFrame:
         periods[-1],
     )
     return df
+
+
+def _warn_on_missing_periods(periods: list[int]) -> None:
+    """Avisa si faltan meses en el medio de la serie.
+
+    El indice `t` es denso sobre los periodos *presentes*, no sobre el calendario. Si
+    falta un mes, los de sus dos lados quedan pegados y todo lo que depende de "el mes
+    anterior" se corre uno sin dar error: los lags comparan contra el mes equivocado, y
+    una cuenta que se fue en el mes faltante y volvio despues parece no haberse ido nunca.
+
+    Es el resultado tipico de subir los snapshots de a uno y saltearse alguno, asi que
+    conviene que grite en vez de dejar un panel plausible pero mal.
+    """
+    if len(periods) < 2:
+        return
+
+    esperado, faltantes = periods[0], []
+    while esperado <= periods[-1]:
+        if esperado not in periods:
+            faltantes.append(esperado)
+        esperado = next_period(esperado)
+
+    if faltantes:
+        logger.warning(
+            "Faltan %s periodo(s) en el medio de la serie: %s. El panel los ignora y deja "
+            "los meses vecinos como consecutivos, asi que los lags y la etiqueta de churn "
+            "van a salir mal. Conseguir esos snapshots antes de entrenar.",
+            len(faltantes),
+            ", ".join(str(f) for f in faltantes),
+        )
 
 
 def period_labels(df: pd.DataFrame) -> dict[int, int]:

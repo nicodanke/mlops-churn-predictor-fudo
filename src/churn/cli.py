@@ -6,6 +6,7 @@ churn score                corre el scoring batch del ultimo periodo
 churn pricing-template     genera / actualiza config/pricing.yaml
 churn pricing-check        muestra cuanto falta completar de la lista de precios
 churn baseline             churn rate observado por periodo
+churn eda                  estadistica de la base: salud, adopcion y señales de churn
 churn run-all              prepare + train + score, de punta a punta
 churn retrain              entrena un candidato y decide si le gana al modelo en produccion
 churn promote              publica un candidato como campeon (o hace rollback)
@@ -35,6 +36,7 @@ from churn.data.seasonality import (
 from churn.logging_setup import setup_logging
 from churn.models import promotion
 from churn.models.artifact import load_model
+from churn.monitoring.drift import compute_drift
 from churn.pricing.revenue import PricingBook
 from churn.pricing.template import build_pricing_template, pricing_coverage
 from churn.scoring.batch import score_period, write_predictions
@@ -174,8 +176,18 @@ def score(
     pricing: str | None = typer.Option(
         None, "--pricing", help="Lista de precios a usar. Por defecto config/pricing.yaml."
     ),
+    with_eda: bool = typer.Option(
+        True,
+        "--eda/--no-eda",
+        help="Escribir tambien la estadistica de la base que muestra el dashboard.",
+    ),
 ) -> None:
-    """Corre el scoring batch y escribe las predicciones a disco."""
+    """Corre el scoring batch y escribe las predicciones a disco.
+
+    De paso deja el reporte de `churn eda`: las features ya estan armadas, calcularlo
+    cuesta segundos, y generar los dos juntos evita que el dashboard muestre una
+    pestaña de predicciones de un mes y una de estadistica de otro.
+    """
     cfg = Config.load(config)
     features = pipeline.prepare(cfg)
     artifact = load_model(model_dir)
@@ -217,6 +229,15 @@ def score(
 
     for kind, path in written.items():
         console.print(f"  {kind:9s} -> {path}")
+
+    if with_eda:
+        # El scoring ya esta escrito: que falle la estadistica no tiene por que tirar
+        # abajo el batch del mes.
+        try:
+            _, eda_path = pipeline.eda(cfg, features)
+            console.print(f"  {'eda':9s} -> {eda_path}")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]No se pudo generar la estadistica de la base: {exc}[/yellow]")
 
 
 @app.command(name="pricing-template")
@@ -274,6 +295,75 @@ def baseline(config: str | None = ConfigOpt) -> None:
     _print_df(pipeline.churn_baseline_table(cfg))
 
 
+@app.command()
+def eda(
+    config: str | None = ConfigOpt,
+    out: str | None = typer.Option(None, "--out", help="Donde escribir el JSON del reporte."),
+    top: int = typer.Option(10, "--top", help="Cuantas filas mostrar en cada tabla."),
+) -> None:
+    """Estadistica descriptiva de la base: salud, adopcion del producto y señales de churn.
+
+    Escribe outputs/eda/stats.json, que es lo que sirve la API en /api/v1/eda. Correrlo
+    despues de `churn prepare` y antes de publicar el batch del mes.
+    """
+    cfg = Config.load(config)
+    report, destino = pipeline.eda(cfg)
+
+    if out:
+        destino = Path(out)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+
+    panel, base = report["panel"], report["base"]
+    console.print(
+        f"\n[bold]Panel[/bold]  {panel['cuentas']:,} cuentas · {panel['filas']:,} filas · "
+        f"{panel['periodos']} periodos ({panel['periodo_desde']} a {panel['periodo_hasta']})"
+    )
+    console.print(
+        f"[bold]Base[/bold]   {base['cuentas_activas_primero']:,} -> "
+        f"{base['cuentas_activas_ultimo']:,} cuentas activas "
+        f"([green]+{base['crecimiento_total']:.1f}%[/green], "
+        f"{base['crecimiento_mensual']:.2f}% mensual compuesto)"
+    )
+    console.print(
+        f"[bold]Churn[/bold]  base [bold]{base['churn_rate_promedio']:.2f}%[/bold] mensual "
+        f"(entre {base['churn_rate_min']:.2f}% y {base['churn_rate_max']:.2f}%) · "
+        f"retencion anual {base['retencion_anual']:.1f}% · "
+        f"vida media {base['vida_media_meses']:.1f} meses"
+    )
+    console.print(
+        f"[bold]Pausas[/bold] {base['cuentas_con_pausas']:,} cuentas se ausentaron y volvieron; "
+        f"{base['cuentas_estacionales']:,} quedan marcadas como estacionales "
+        f"({base['pct_estacionales']:.1f}% de la base)"
+    )
+
+    console.print("\n[bold]Adopcion por funcionalidad[/bold] (% de cuentas del ultimo periodo)")
+    for grupo in report["adopcion"]["grupos"]:
+        items = grupo["items"][:top]
+        linea = " · ".join(f"{i['etiqueta']} {i['pct']:.0f}%" for i in items)
+        console.print(f"  [dim]{grupo['grupo']:22s}[/dim] {linea}")
+
+    console.print(
+        "\n[bold]Que se apaga antes de una baja[/bold] "
+        "(% de cuentas con la funcionalidad en uso, el mes previo)"
+    )
+    tabla = Table(box=None, pad_edge=False)
+    for columna in ("funcionalidad", "se queda", "churnea", "lift"):
+        tabla.add_column(columna, justify="right" if columna != "funcionalidad" else "left")
+    for senal in report["churn"]["senales"][:top]:
+        lift = senal["lift"]
+        color = "red" if lift is not None and lift < 0.8 else "white"
+        tabla.add_row(
+            senal["etiqueta"],
+            f"{senal['adopcion_se_queda']:.1f}%",
+            f"{senal['adopcion_churn']:.1f}%",
+            f"[{color}]{lift:.2f}[/{color}]" if lift is not None else "-",
+        )
+    console.print(tabla)
+
+    console.print(f"\n  reporte -> {destino}")
+
+
 @app.command(name="run-all")
 def run_all(
     config: str | None = ConfigOpt,
@@ -281,9 +371,10 @@ def run_all(
     force: bool = typer.Option(False, "--force"),
     pricing: str | None = typer.Option(None, "--pricing"),
 ) -> None:
-    """Pipeline completo: prepare -> train -> score."""
+    """Pipeline completo: prepare -> eda -> train -> score."""
     cfg = Config.load(config)
     features = pipeline.prepare(cfg, force=force)
+    pipeline.eda(cfg, features)
     artifact, report = pipeline.train(cfg, features, model_dir=model_dir)
     console.print(report["results"]["test"].render())
 
@@ -321,6 +412,43 @@ def info(model_dir: str = ModelDirOpt) -> None:
             }
         )
     )
+
+
+@app.command()
+def drift(
+    config: str | None = ConfigOpt,
+    model_dir: str = ModelDirOpt,
+    periodo: int | None = typer.Option(
+        None, help="Periodo YYYYMM a comparar. Por defecto el ultimo."
+    ),
+    top: int | None = typer.Option(None, "--top", help="Cuantas features mostrar."),
+    out: str | None = typer.Option(None, "--out", help="Guarda el reporte en un JSON."),
+    fail_on_drift: bool = typer.Option(
+        False,
+        "--fail-on-drift",
+        help="Sale con codigo 1 si alguna feature supera el umbral alto (util en CI).",
+    ),
+) -> None:
+    """Compara los datos del mes con aquellos con los que se entreno el modelo (PSI)."""
+    cfg = Config.load(config)
+    features = pipeline.prepare(cfg)
+    artifact = load_model(model_dir)
+    reporte = compute_drift(features, artifact, cfg, periodo=periodo)
+
+    console.print(f"\n[bold]Drift del periodo {reporte.periodo_actual}[/bold]")
+    console.print(reporte.render())
+
+    console.print("\n[bold]Features con mayor PSI[/bold]")
+    _print_df(reporte.tabla.head(top or int(cfg.get("monitoring.top_n", 15))))
+
+    if out:
+        destino = Path(out)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(json.dumps(reporte.to_dict(), indent=2, ensure_ascii=False))
+        console.print(f"\n  reporte -> {destino}")
+
+    if fail_on_drift and reporte.hay_drift:
+        raise typer.Exit(1)
 
 
 @app.command()

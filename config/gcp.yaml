@@ -22,5 +22,9 @@ data:
   interim_path: "/tmp/churn/interim/panel.parquet"
   features_path: "/tmp/churn/interim/features.parquet"
 
+eda:
+  # Lo escribe `churn score` junto con el batch y lo lee el servicio en /api/v1/eda.
+  output_dir: "/mnt/gcs/eda"
+
 scoring:
   output_dir: "/mnt/gcs/predictions"

@@ -17,8 +17,13 @@
         <p class="brand-sub">Customer Experience · Fudo</p>
       </div>
     </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab on" data-view="riesgo">Riesgo</button>
+      <button class="tab" data-view="uso">Uso de la base</button>
+    </nav>
+
     <div class="topbar-right">
-      <label class="field">
+      <label class="field" id="period-field">
         <span>Periodo</span>
         <select id="period-select"></select>
       </label>
@@ -33,6 +38,7 @@
   <div id="banner" class="banner hidden"></div>
 
   <main>
+   <div id="view-riesgo" class="view">
     <section class="kpis" id="kpis"></section>
 
     <section class="grid-2">
@@ -88,6 +94,60 @@
         <button id="next" class="ghost">Siguiente →</button>
       </footer>
     </section>
+   </div>
+
+   <!-- Estadistica descriptiva de la base, servida por /api/v1/eda. Es contexto, no
+        prediccion: contra que base esta leyendo CX las probabilidades de churn. -->
+   <div id="view-uso" class="view hidden">
+    <section class="kpis" id="eda-kpis"></section>
+
+    <section class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Cuentas activas</h2>
+          <p>Cuentas con estado comercial ACTIVE en el snapshot de cada mes.</p>
+        </header>
+        <figure class="chart" id="chart-base"></figure>
+        <p class="legend" id="chart-base-legend"></p>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Churn mensual confirmado</h2>
+          <p>Porcentaje de cuentas que dejan de aparecer y no vuelven.</p>
+        </header>
+        <figure class="chart" id="chart-churn"></figure>
+        <p class="legend" id="chart-churn-legend"></p>
+      </article>
+    </section>
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Qué usa una cuenta de Fudo</h2>
+        <p id="adopcion-sub">Porcentaje de cuentas con rastro de cada funcionalidad en el mes.</p>
+      </header>
+      <div class="adopcion" id="eda-adopcion"></div>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Qué se apaga antes de una baja</h2>
+          <p>Adopción de cada funcionalidad el mes previo, según la cuenta se haya ido o no.</p>
+        </header>
+        <div class="senales" id="eda-senales"></div>
+        <p class="legend" id="eda-senales-legend"></p>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Dónde se concentra el churn</h2>
+          <p>Churn rate por antigüedad de la cuenta y por país.</p>
+        </header>
+        <div class="cortes" id="eda-cortes"></div>
+      </article>
+    </section>
+   </div>
   </main>
 
   <aside id="drawer" class="drawer" aria-hidden="true">
