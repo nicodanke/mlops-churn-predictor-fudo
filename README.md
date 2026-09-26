@@ -782,6 +782,19 @@ y despliegue a GCP.
 
 ## Documentación de referencia
 
+**Explicación de cada pieza, en cinco documentos cortos** — [`docs/`](docs/README.md):
+
+| # | Documento | Responde a |
+|---|---|---|
+| 1 | [El modelo](docs/01-modelo.md) | ¿Qué predice, con qué datos y por qué así? |
+| 2 | [El scoring](docs/02-scoring.md) | ¿Cómo se pasa del CSV del mes a las predicciones? |
+| 3 | [La API](docs/03-api.md) | ¿Qué endpoints hay y qué devuelve cada uno? |
+| 4 | [El dashboard](docs/04-web.md) | ¿Con qué está hecha la web y cómo consume la API? |
+| 5 | [El deploy en GCP](docs/05-deploy.md) | ¿Cómo se sube y qué hace cada comando de `make`? |
+
+Este README es la versión larga y con los números de respaldo; esos documentos son la
+versión corta, para entender el sistema sin leer código.
+
 - [`notebooks/01_eda_churn.ipynb`](notebooks/01_eda_churn.ipynb) — el análisis exploratorio
   del que salieron las decisiones de etiquetado, split y features.
 - [`notebooks/02_eda_intercom.ipynb`](notebooks/02_eda_intercom.ipynb) — evaluación de los
