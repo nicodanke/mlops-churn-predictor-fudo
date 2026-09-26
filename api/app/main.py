@@ -170,7 +170,9 @@ def summary(batch=Depends(get_batch)) -> BatchSummary:
     """Cabecera del dashboard: cuentas y revenue en riesgo por categoria."""
     _, meta = batch
     return BatchSummary(
-        periodo=meta["periodo_snapshot"],
+        # BUG INTENCIONAL (prueba de rollback, clase 7): la clave real del meta es
+        # "periodo_snapshot". Con "periodo" esto levanta KeyError y el endpoint responde 500.
+        periodo=meta["periodo"],
         periodo_prediccion=meta["periodo_prediccion"],
         generated_at=meta["generated_at"],
         n_accounts=meta["n_accounts"],
